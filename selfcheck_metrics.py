@@ -73,16 +73,76 @@ class SelfCheckBERTScore:
 # ---------------------------------------------------------------------------
 
 class SelfCheckMQAG:
-    """Very small proxy for the MQAG approach.
+    """Question generation and answering based scorer.
 
-    The implementation is intentionally simple: the "answer" to a
-    sentence is assumed to be its final token.  The score counts in how
-    many of the sample passages this token does *not* appear.
+    The real MQAG variant in the SelfCheckGPT paper generates questions
+    from every sentence and runs a QA model over sampled passages.  The
+    reference answer derived from the original sentence is compared with
+    the answers from each sample.  The inconsistency score is the ratio
+    of disagreements (``1 - matches/num_samples``).
+
+    To keep this project lightweight the heavy question generation and
+    QA models are optional.  ``SelfCheckMQAG`` can be instantiated with
+    custom callables ``qg_fn`` and ``qa_fn`` for generating questions and
+    answers respectively.  When ``use_hf=True`` the class attempts to
+    load small HuggingFace models (T5 for question generation and
+    DistilBERT for QA).  If the models are unavailable, a simple fallback
+    heuristic is used where the "answer" is assumed to be the final token
+    of the sentence.
     """
+
+    def __init__(
+        self,
+        qg_fn: Callable[[str], str] | None = None,
+        qa_fn: Callable[[str, str], str] | None = None,
+        use_hf: bool = False,
+    ) -> None:
+        self.qg_fn = qg_fn
+        self.qa_fn = qa_fn
+
+        if self.qg_fn is None or self.qa_fn is None:
+            if use_hf:
+                try:  # pragma: no cover - heavy branch
+                    from transformers import pipeline  # type: ignore
+
+                    qg_pipe = pipeline(
+                        "text2text-generation", model="valhalla/t5-small-qg-hl"
+                    )
+                    qa_pipe = pipeline(
+                        "question-answering",
+                        model="distilbert-base-uncased-distilled-squad",
+                    )
+
+                    self.qg_fn = lambda s: qg_pipe(s)[0]["generated_text"]
+                    self.qa_fn = lambda q, c: qa_pipe(question=q, context=c)["answer"]
+                except Exception:
+                    # If the heavy models cannot be loaded the object will
+                    # fall back to the light-weight heuristic implemented in
+                    # ``predict`` below.
+                    self.qg_fn = None
+                    self.qa_fn = None
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
         samples = list(samples)
         scores: List[float] = []
+
+        if self.qg_fn is not None and self.qa_fn is not None:
+            for sent in sentences:
+                question = self.qg_fn(sent).strip()
+                if not question:
+                    scores.append(1.0)
+                    continue
+                ref_answer = self.qa_fn(question, sent).strip().lower()
+                matches = 0
+                for sample in samples:
+                    ans = self.qa_fn(question, sample).strip().lower()
+                    if ans == ref_answer and ans:
+                        matches += 1
+                score = 1 - matches / max(1, len(samples))
+                scores.append(float(score))
+            return scores
+
+        # -- Fallback heuristic ------------------------------------------------
         for sent in sentences:
             if not sent.split():
                 scores.append(0.0)

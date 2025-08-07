@@ -3,3 +3,6 @@ scikit-learn
 datasets
 openai
 pytest
+transformers
+torch
+sentencepiece
