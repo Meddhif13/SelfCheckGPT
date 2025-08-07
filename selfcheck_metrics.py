@@ -9,10 +9,12 @@ and a list of sample passages generated from the same prompt.  The method
 returns a list of inconsistency scores where higher values indicate a
 higher likelihood of hallucination.
 
-The heavy models used in the paper (e.g. RoBERTa-large for BERTScore or
-DeBERTa for NLI) are optional.  When the required libraries or model
-weights are not available the code falls back to light-weight heuristics
-so that the project remains runnable in constrained environments.
+Most heavy models used in the paper (e.g. DeBERTa for NLI) are optional.
+When the required libraries or model weights are not available the code
+falls back to light-weight heuristics so that the project remains
+runnable in constrained environments.  The BERTScore variant now relies
+on the real :mod:`bert_score` package and therefore requires access to
+the corresponding model weights.
 """
 
 from __future__ import annotations
@@ -27,43 +29,36 @@ import math
 # ---------------------------------------------------------------------------
 
 class SelfCheckBERTScore:
-    """Approximation of the SelfCheckGPT-BERTScore variant.
+    """BERTScore-based SelfCheckGPT variant.
+
+    This implementation initializes :class:`bert_score.BERTScorer` by default
+    and computes the inconsistency score as ``1 - F1``.  Model selection and
+    baseline rescaling can be configured via the constructor.
 
     Parameters
     ----------
-    use_bert_score: bool, optional
-        If ``True`` and the :mod:`bert_score` package is available the real
-        BERTScore implementation is used.  Otherwise a simple Jaccard
-        similarity between tokens is employed.  The inconsistency score is
-        ``1 - similarity`` so that higher means more likely hallucinated.
+    model: str, optional
+        HuggingFace model name, e.g. ``"roberta-large"``.
+    baseline: bool, optional
+        If ``True`` scores are rescaled with the BERTScore baseline.
     """
 
-    def __init__(self, use_bert_score: bool = False) -> None:
-        self.scorer = None
-        if use_bert_score:
-            try:
-                from bert_score import BERTScorer  # type: ignore
+    def __init__(self, model: str = "roberta-large", baseline: bool = True) -> None:
+        try:
+            from bert_score import BERTScorer  # type: ignore
 
-                self.scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-            except Exception:  # pragma: no cover - optional dependency
-                self.scorer = None
-
-    def _jaccard(self, a: str, b: str) -> float:
-        ta = set(a.lower().split())
-        tb = set(b.lower().split())
-        if not ta and not tb:
-            return 1.0
-        return len(ta & tb) / len(ta | tb)
+            self.scorer = BERTScorer(
+                lang="en", rescale_with_baseline=baseline, model_type=model
+            )
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("BERTScore is unavailable") from exc
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
         joined_samples = " ".join(samples)
         scores: List[float] = []
         for sent in sentences:
-            if self.scorer is not None:  # pragma: no cover - heavy branch
-                _, _, F = self.scorer.score([sent], [joined_samples])
-                score = 1 - F.mean().item()
-            else:
-                score = 1 - self._jaccard(sent, joined_samples)
+            _, _, F = self.scorer.score([sent], [joined_samples])
+            score = 1 - F.mean().item()
             scores.append(float(score))
         return scores
 

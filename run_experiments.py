@@ -57,7 +57,7 @@ def _prompt_heuristic(context: str, sentence: str) -> str:
 MetricFactory = Dict[str, Callable[[], object]]
 
 METRICS: MetricFactory = {
-    "bertscore": lambda: SelfCheckBERTScore(use_bert_score=False),
+    "bertscore": SelfCheckBERTScore,
     "mqag": SelfCheckMQAG,
     "ngram": SelfCheckNgram,
     "nli": SelfCheckNLI,

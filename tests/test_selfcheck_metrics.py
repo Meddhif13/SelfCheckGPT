@@ -13,12 +13,38 @@ from selfcheck_metrics import (
 )
 
 
+import pytest
+
+
+def _load_bertscore():
+    try:
+        return SelfCheckBERTScore()
+    except Exception as e:  # pragma: no cover - dependent on external model
+        pytest.skip(f"BERTScore model unavailable: {e}")
+
+
+def _expected(metric: SelfCheckBERTScore, sent: str, samples: list[str]) -> float:
+    joined = " ".join(samples)
+    _, _, F = metric.scorer.score([sent], [joined])
+    return 1 - F.mean().item()
+
+
 def test_bertscore_identical():
-    metric = SelfCheckBERTScore()
+    metric = _load_bertscore()
     sent = ["Alice is a doctor."]
     samples = ["Alice is a doctor."]
     score = metric.predict(sent, samples)[0]
-    assert score < 0.2
+    expected = _expected(metric, sent[0], samples)
+    assert score == pytest.approx(expected, abs=1e-6)
+
+
+def test_bertscore_doctor_lawyer():
+    metric = _load_bertscore()
+    sent = ["Alice is a doctor."]
+    samples = ["Alice is a lawyer."]
+    score = metric.predict(sent, samples)[0]
+    expected = _expected(metric, sent[0], samples)
+    assert score == pytest.approx(expected, abs=1e-6)
 
 
 def test_ngram_rare_word():
