@@ -20,6 +20,8 @@ from __future__ import annotations
 from typing import Callable, Iterable, List
 import collections
 import math
+import os
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -32,21 +34,34 @@ class SelfCheckBERTScore:
     Parameters
     ----------
     use_bert_score: bool, optional
-        If ``True`` and the :mod:`bert_score` package is available the real
-        BERTScore implementation is used.  Otherwise a simple Jaccard
-        similarity between tokens is employed.  The inconsistency score is
-        ``1 - similarity`` so that higher means more likely hallucinated.
+        If ``True`` the :mod:`bert_score` package is used with a RoBERTa-large
+        checkpoint.  When ``False`` a simple Jaccard similarity between tokens
+        is employed instead.  The inconsistency score is ``1 - similarity`` so
+        that higher means more likely hallucinated.
+    cache_dir: str, optional
+        Directory to cache model weights.  Defaults to ``.cache`` next to this
+        file.
     """
 
-    def __init__(self, use_bert_score: bool = False) -> None:
+    def __init__(self, use_bert_score: bool = True, cache_dir: str | None = None) -> None:
+        self.use_bert_score = use_bert_score
         self.scorer = None
-        if use_bert_score:
+
+        if self.use_bert_score:
             try:
                 from bert_score import BERTScorer  # type: ignore
 
-                self.scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-            except Exception:  # pragma: no cover - optional dependency
-                self.scorer = None
+                if cache_dir is None:
+                    cache_dir = str(Path(__file__).resolve().parent / ".cache")
+                os.environ.setdefault("TRANSFORMERS_CACHE", cache_dir)
+
+                self.scorer = BERTScorer(
+                    lang="en",
+                    model_type="roberta-large",
+                    rescale_with_baseline=True,
+                )
+            except Exception as exc:  # pragma: no cover - heavy branch
+                raise RuntimeError("BERTScore is unavailable") from exc
 
     def _jaccard(self, a: str, b: str) -> float:
         ta = set(a.lower().split())
@@ -59,7 +74,7 @@ class SelfCheckBERTScore:
         joined_samples = " ".join(samples)
         scores: List[float] = []
         for sent in sentences:
-            if self.scorer is not None:  # pragma: no cover - heavy branch
+            if self.use_bert_score:
                 _, _, F = self.scorer.score([sent], [joined_samples])
                 score = 1 - F.mean().item()
             else:

@@ -14,7 +14,7 @@ from selfcheck_metrics import (
 
 
 def test_bertscore_identical():
-    metric = SelfCheckBERTScore()
+    metric = SelfCheckBERTScore(use_bert_score=False)
     sent = ["Alice is a doctor."]
     samples = ["Alice is a doctor."]
     score = metric.predict(sent, samples)[0]
