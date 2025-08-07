@@ -14,8 +14,10 @@ classes for five scoring strategies:
 * **NLI** – entailment check via substring matching.
 * **LLM Prompt** – ask an external model whether a sentence is supported.
 
-A small demonstration script `run_experiments.py` evaluates the n‑gram
-metric on a subset of the WikiBio hallucination dataset.
+The `run_experiments.py` script can evaluate any of the simplified
+metrics on a slice of the WikiBio hallucination dataset.  It mirrors the
+evaluation loop of the original project but uses light‑weight stand‑ins so
+that the code runs in restricted environments.
 
 ## Installation
 
@@ -23,10 +25,19 @@ metric on a subset of the WikiBio hallucination dataset.
 pip install -r requirements.txt
 ```
 
-## Running the example experiment
+## Running experiments
+
+By default the script evaluates the n‑gram metric on fifty examples:
 
 ```bash
 python run_experiments.py
+```
+
+To score several metrics at once specify them via ``--metrics`` and
+optionally change the number of evaluated examples with ``--limit``:
+
+```bash
+python run_experiments.py --metrics ngram mqag nli --limit 25
 ```
 
 ## Running tests
