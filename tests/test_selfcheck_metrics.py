@@ -1,5 +1,6 @@
 import math
 import sys
+import types
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -54,3 +55,45 @@ def test_prompt_mapping_yes_no():
     samples = ["Observation shows the earth is round.", "The moon orbits"]
     score = metric.predict(sents, samples)[0]
     assert score == 0.5  # one yes and one no
+
+
+def test_prompt_openai_mocked(monkeypatch):
+    calls = iter(["Yes", "No"])
+
+    def fake_create(**kwargs):
+        return {"choices": [{"message": {"content": next(calls)}}]}
+
+    error_module = types.SimpleNamespace(OpenAIError=Exception)
+    openai_module = types.SimpleNamespace(
+        ChatCompletion=types.SimpleNamespace(create=fake_create),
+        api_key="",
+        error=error_module,
+    )
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+    monkeypatch.setitem(sys.modules, "openai.error", error_module)
+
+    metric = SelfCheckPrompt(api_key="test", rate_limit=0.0)
+    sents = ["The earth is round."]
+    samples = ["Observation shows the earth is round.", "The moon orbits"]
+    score = metric.predict(sents, samples)[0]
+    assert score == 0.5
+
+
+def test_prompt_openai_error(monkeypatch):
+    def fake_create(**kwargs):
+        raise Exception("rate limit")
+
+    error_module = types.SimpleNamespace(OpenAIError=Exception)
+    openai_module = types.SimpleNamespace(
+        ChatCompletion=types.SimpleNamespace(create=fake_create),
+        api_key="",
+        error=error_module,
+    )
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+    monkeypatch.setitem(sys.modules, "openai.error", error_module)
+
+    metric = SelfCheckPrompt(api_key="test", rate_limit=0.0, max_retries=1)
+    sents = ["The earth is round."]
+    samples = ["Observation shows the earth is round."]
+    score = metric.predict(sents, samples)[0]
+    assert score == 0.5

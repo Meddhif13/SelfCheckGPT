@@ -20,6 +20,8 @@ from __future__ import annotations
 from typing import Callable, Iterable, List
 import collections
 import math
+import os
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -146,26 +148,55 @@ class SelfCheckPrompt:
 
     The constructor accepts an ``ask_fn`` callable used to query the LLM.
     This makes the class easy to test as the heavy API call can be
-    replaced with a stub.
+    replaced with a stub.  ``api_key`` and ``rate_limit`` parameters
+    provide configurable access to real APIs.
     """
 
-    def __init__(self, ask_fn: Callable[[str, str], str] | None = None) -> None:
+    def __init__(
+        self,
+        ask_fn: Callable[[str, str], str] | None = None,
+        api_key: str | None = None,
+        rate_limit: float = 1.0,
+        max_retries: int = 2,
+    ) -> None:
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self.rate_limit = rate_limit
+        self.max_retries = max_retries
         self.ask_fn = ask_fn or self._openai_ask
+        self._last_call = 0.0
 
     # -- Actual API call -----------------------------------------------------
-    def _openai_ask(self, context: str, sentence: str) -> str:  # pragma: no cover - requires network
-        import openai
+    def _openai_ask(self, context: str, sentence: str) -> str:
+        """Query the OpenAI API with basic throttling."""  # pragma: no cover - requires network
+
+        try:
+            import openai
+            from openai.error import OpenAIError
+        except Exception:
+            return "Unknown"
+
+        openai.api_key = self.api_key or openai.api_key
 
         prompt = (
             f"Context: {context}\nSentence: {sentence}\n"
             "Is the sentence supported by the context above?\nAnswer Yes or No:"
         )
-        res = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        return res["choices"][0]["message"]["content"].strip()
+
+        for _ in range(self.max_retries):
+            delay = self.rate_limit - (time.time() - self._last_call)
+            if delay > 0:
+                time.sleep(delay)
+            self._last_call = time.time()
+            try:
+                res = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                )
+                return res["choices"][0]["message"]["content"].strip()
+            except OpenAIError:
+                time.sleep(self.rate_limit)
+        return "Unknown"
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
         samples = list(samples)

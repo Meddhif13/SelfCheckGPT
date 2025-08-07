@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from typing import Callable, Dict, Iterable, List
 
 from datasets import load_dataset
@@ -42,16 +43,16 @@ def load_annotations(example) -> List[int]:
 # Metric factory ------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
+_PROMPT_CLIENT = SelfCheckPrompt(
+    api_key=os.getenv("OPENAI_API_KEY", ""),
+    rate_limit=float(os.getenv("OPENAI_RATE_LIMIT", "1.0")),
+)
+
+
 def _prompt_heuristic(context: str, sentence: str) -> str:
-    """Very small stand‑in for the real LLM prompt call.
+    """Proxy that delegates to the real OpenAI prompt call."""
 
-    The function simply checks whether the final token of ``sentence``
-    appears in ``context`` and returns "Yes" or "No" accordingly.  This
-    keeps the example runnable without external API access.
-    """
-
-    token = sentence.split()[-1].strip(". ,") if sentence.split() else ""
-    return "Yes" if token and token in context else "No"
+    return _PROMPT_CLIENT._openai_ask(context, sentence)
 
 
 MetricFactory = Dict[str, Callable[[], object]]
