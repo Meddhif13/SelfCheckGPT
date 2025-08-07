@@ -45,6 +45,20 @@ def test_mqag_last_token():
     assert math.isclose(score, 0.0)
 
 
+def test_mqag_qg_qa_scoring():
+    def fake_qg(sentence: str) -> str:
+        return "What does John love?"
+
+    def fake_qa(question: str, context: str) -> str:
+        return "pizza" if "pizza" in context else "unknown"
+
+    metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
+    sents = ["John loves pizza"]
+    samples = ["Yesterday John ate pizza", "John prefers pasta"]
+    score = metric.predict(sents, samples)[0]
+    assert math.isclose(score, 0.5)
+
+
 def test_prompt_mapping_yes_no():
     def fake_ask(context: str, sentence: str) -> str:
         return "Yes" if "earth" in context else "No"
