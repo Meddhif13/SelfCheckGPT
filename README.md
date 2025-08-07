@@ -21,8 +21,13 @@ that the code runs in restricted environments.
 
 ## Installation
 
+The project relies on the WikiBio hallucination dataset and spaCy's English
+model. After installing the Python dependencies, download these resources:
+
 ```bash
 pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+python -c "from data.utils import load_wikibio_hallucination; load_wikibio_hallucination(split='train[:1]')"
 ```
 
 ## Running experiments

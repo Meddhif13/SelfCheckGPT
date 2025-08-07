@@ -6,3 +6,6 @@ pytest
 transformers
 torch
 sentencepiece
+bert-score
+spacy
+sentence-transformers
