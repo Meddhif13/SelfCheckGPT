@@ -1,11 +1,11 @@
 """Run SelfCheckGPT metrics over the WikiBio hallucination dataset.
 
-This script loads a split of the WikiBio hallucination dataset, optionally
-regenerates model samples with the lightweight sampling pipeline and then
-scores a selection of SelfCheckGPT metrics.  For every metric we compute the
-usual classification statistics (precision, recall, F1, average precision and
-Brier score) and also derive calibration curves.  Results are written to a CSV
-file and precision/recall and calibration plots are stored alongside it.
+This script loads one or more splits of the WikiBio hallucination dataset,
+optionally regenerates model samples with the lightweight sampling pipeline and
+then scores a selection of SelfCheckGPT metrics.  For every metric we compute
+the usual classification statistics (precision, recall, F1, average precision
+and Brier score) and also derive calibration curves.  Results are written to a
+CSV file and precision/recall and calibration plots are stored alongside it.
 """
 
 from __future__ import annotations
@@ -161,8 +161,12 @@ def main() -> None:  # pragma: no cover - exercised via CLI
     )
     parser.add_argument(
         "--split",
-        default="test",
-        help="Dataset split or slice to load, e.g. 'test[:100]'.",
+        nargs="+",
+        default=["test"],
+        help=(
+            "Dataset split(s) or slices to load, e.g. 'test[:100]'."
+            " Use 'all' to evaluate train, validation and test."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -188,10 +192,10 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         help="Regenerate samples using the simple sampling pipeline.",
     )
     parser.add_argument(
-        "--num-samples",
+        "--sample-count",
         type=int,
         default=1,
-        help="Number of samples per prompt when resampling.",
+        help="Number of samples per prompt to use or generate.",
     )
     parser.add_argument(
         "--temperature",
@@ -219,73 +223,84 @@ def main() -> None:  # pragma: no cover - exercised via CLI
     if args.resample or "prompt" in metric_names:
         llm = OpenAIChatLLM(model=args.llm_model)
 
-    logging.info("Loading dataset split '%s' ...", args.split)
-    ds = load_wikibio_hallucination(split=args.split)
+    split_names = args.split
+    if "all" in split_names:
+        split_names = ["train", "validation", "test"]
 
-    examples = list(ds)
-    if args.limit is not None:
-        examples = examples[: args.limit]
+    base_out = Path(args.output_dir)
+    base_out.mkdir(parents=True, exist_ok=True)
 
-    if args.resample or not all("gpt3_text_samples" in ex for ex in examples):
-        logging.info("Generating samples with LLM ...")
-        prompts = [" ".join(ex["gpt3_sentences"]) for ex in examples]
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        sample_file = output_dir / "samples.jsonl"
-        generate_samples(
-            llm,
-            prompts,
-            sample_file,
-            num_samples=args.num_samples,
-            temperature=args.temperature,
-        )
-        prompt_to_samples: dict[str, list[str]] = collections.defaultdict(list)
-        with sample_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                obj = json.loads(line)
-                prompt_to_samples[obj["prompt"]].append(obj["sample"])
-        for ex, prompt in zip(examples, prompts):
-            ex["gpt3_text_samples"] = prompt_to_samples[prompt]
+    for split in split_names:
+        logging.info("Loading dataset split '%s' ...", split)
+        ds = load_wikibio_hallucination(split=split)
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        examples = list(ds)
+        if args.limit is not None:
+            examples = examples[: args.limit]
 
-    summary_rows: List[dict[str, float | str]] = []
-    for name in metric_names:
-        if name not in METRICS:
-            logging.warning("Unknown metric '%s' -- skipping", name)
-            continue
-        try:
-            if name == "ngram":
-                metric = SelfCheckNgram(n=args.ngram_n)
-            elif name == "prompt":
-                metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
-            else:
-                metric = METRICS[name]()
-            stats = evaluate(metric, examples, bins=args.calib_bins)
-        except Exception as exc:  # pragma: no cover - optional dependencies
-            logging.warning("Metric %s failed: %s", name, exc)
-            continue
+        if args.resample or not all("gpt3_text_samples" in ex for ex in examples):
+            logging.info("Generating samples with LLM ...")
+            prompts = [" ".join(ex["gpt3_sentences"]) for ex in examples]
+            out_dir = base_out / split if len(split_names) > 1 else base_out
+            out_dir.mkdir(parents=True, exist_ok=True)
+            sample_file = out_dir / "samples.jsonl"
+            generate_samples(
+                llm,
+                prompts,
+                sample_file,
+                num_samples=args.sample_count,
+                temperature=args.temperature,
+            )
+            prompt_to_samples: dict[str, list[str]] = collections.defaultdict(list)
+            with sample_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    prompt_to_samples[obj["prompt"]].append(obj["sample"])
+            for ex, prompt in zip(examples, prompts):
+                ex["gpt3_text_samples"] = prompt_to_samples[prompt]
+        else:
+            for ex in examples:
+                ex["gpt3_text_samples"] = ex.get("gpt3_text_samples", [])[: args.sample_count]
 
-        _save_plots(name, stats, output_dir)
-        summary_rows.append(
-            {
-                "metric": name,
-                "average_precision": stats["average_precision"],
-                "precision": stats["precision"],
-                "recall": stats["recall"],
-                "f1": stats["f1"],
-                "brier": stats["brier"],
-            }
-        )
+        out_dir = base_out / split if len(split_names) > 1 else base_out
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-    if summary_rows:
-        summary_path = output_dir / "summary.csv"
-        with summary_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
-            writer.writeheader()
-            writer.writerows(summary_rows)
-        logging.info("Wrote results to %s", summary_path)
+        summary_rows: List[dict[str, float | str]] = []
+        for name in metric_names:
+            if name not in METRICS:
+                logging.warning("Unknown metric '%s' -- skipping", name)
+                continue
+            try:
+                if name == "ngram":
+                    metric = SelfCheckNgram(n=args.ngram_n)
+                elif name == "prompt":
+                    metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
+                else:
+                    metric = METRICS[name]()
+                stats = evaluate(metric, examples, bins=args.calib_bins)
+            except Exception as exc:  # pragma: no cover - optional dependencies
+                logging.warning("Metric %s failed: %s", name, exc)
+                continue
+
+            _save_plots(name, stats, out_dir)
+            summary_rows.append(
+                {
+                    "metric": name,
+                    "average_precision": stats["average_precision"],
+                    "precision": stats["precision"],
+                    "recall": stats["recall"],
+                    "f1": stats["f1"],
+                    "brier": stats["brier"],
+                }
+            )
+
+        if summary_rows:
+            summary_path = out_dir / "summary.csv"
+            with summary_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
+                writer.writeheader()
+                writer.writerows(summary_rows)
+            logging.info("Wrote results to %s", summary_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
