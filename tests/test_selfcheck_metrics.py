@@ -18,15 +18,17 @@ import pytest
 
 def _load_bertscore():
     try:
-        return SelfCheckBERTScore()
+        return SelfCheckBERTScore(model="roberta-base")
     except Exception as e:  # pragma: no cover - dependent on external model
         pytest.skip(f"BERTScore model unavailable: {e}")
 
 
 def _expected(metric: SelfCheckBERTScore, sent: str, samples: list[str]) -> float:
-    joined = " ".join(samples)
-    _, _, F = metric.scorer.score([sent], [joined])
-    return 1 - F.mean().item()
+    scores: list[float] = []
+    for sample in samples:
+        _, _, F = metric.scorer.score([sent], [sample])
+        scores.append(1 - F.mean().item())
+    return sum(scores) / len(scores)
 
 
 def test_bertscore_identical():
@@ -42,6 +44,15 @@ def test_bertscore_doctor_lawyer():
     metric = _load_bertscore()
     sent = ["Alice is a doctor."]
     samples = ["Alice is a lawyer."]
+    score = metric.predict(sent, samples)[0]
+    expected = _expected(metric, sent[0], samples)
+    assert score == pytest.approx(expected, abs=1e-6)
+
+
+def test_bertscore_multiple_samples():
+    metric = _load_bertscore()
+    sent = ["Alice is a doctor."]
+    samples = ["Alice is a doctor.", "Alice is a lawyer."]
     score = metric.predict(sent, samples)[0]
     expected = _expected(metric, sent[0], samples)
     assert score == pytest.approx(expected, abs=1e-6)

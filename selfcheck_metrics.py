@@ -31,9 +31,11 @@ import math
 class SelfCheckBERTScore:
     """BERTScore-based SelfCheckGPT variant.
 
-    This implementation initializes :class:`bert_score.BERTScorer` by default
-    and computes the inconsistency score as ``1 - F1``.  Model selection and
-    baseline rescaling can be configured via the constructor.
+    This implementation initializes :class:`bert_score.BERTScorer` and compares
+    each sentence with every sampled passage separately.  The inconsistency score
+    for a sentence is the average ``1 - F1`` across all samples.  Model selection
+    and baseline rescaling can be configured via the constructor.  When a GPU is
+    available the underlying BERTScore model runs on ``cuda``.
 
     Parameters
     ----------
@@ -45,21 +47,31 @@ class SelfCheckBERTScore:
 
     def __init__(self, model: str = "roberta-large", baseline: bool = True) -> None:
         try:
+            import torch
             from bert_score import BERTScorer  # type: ignore
 
+            device = "cuda" if torch.cuda.is_available() else "cpu"
             self.scorer = BERTScorer(
-                lang="en", rescale_with_baseline=baseline, model_type=model
+                lang="en",
+                rescale_with_baseline=baseline,
+                model_type=model,
+                device=device,
             )
         except Exception as exc:  # pragma: no cover - optional dependency
             raise RuntimeError("BERTScore is unavailable") from exc
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
-        joined_samples = " ".join(samples)
+        samples = list(samples)
         scores: List[float] = []
         for sent in sentences:
-            _, _, F = self.scorer.score([sent], [joined_samples])
-            score = 1 - F.mean().item()
-            scores.append(float(score))
+            gaps: List[float] = []
+            for sample in samples:
+                P, R, F = self.scorer.score([sent], [sample])
+                gaps.append(1 - F.mean().item())
+            if gaps:
+                scores.append(float(sum(gaps) / len(gaps)))
+            else:
+                scores.append(0.0)
         return scores
 
 
