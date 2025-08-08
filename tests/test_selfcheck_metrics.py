@@ -82,43 +82,53 @@ def test_nli_entailment_and_contradiction():
     assert scores[1] > 0.9  # contradiction
 
 
-def test_mqag_answerable_and_unanswerable():
-    def fake_qg(sentence: str) -> str:
+def test_mqag_multiple_questions():
+    def fake_qg(sentence: str) -> list[str]:
         if "John" in sentence:
-            return "What does John love?"
-        return "What does Lucy climb?"
+            return ["What does John love?", "Who loves pizza?"]
+        return ["What does Lucy climb?", "Who climbs trees?"]
 
     def fake_qa(question: str, context: str) -> str:
-        if "John" in question and "pizza" in context:
+        if question == "What does John love?" and "pizza" in context:
             return "pizza"
-        if "Lucy" in question and "trees" in context:
+        if question == "Who loves pizza?" and "John" in context and "pizza" in context:
+            return "john"
+        if question == "What does Lucy climb?" and "trees" in context:
             return "trees"
+        if question == "Who climbs trees?" and "Lucy" in context and "trees" in context:
+            return "lucy"
         return ""
 
     metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
     sents = ["John loves pizza", "Lucy climbs trees"]
-    samples = ["Yesterday John ate pizza", "John still loves pizza"]
+    samples = [
+        "Yesterday John ate pizza",
+        "John still loves pizza",
+        "Yesterday Lucy climbed trees",
+    ]
     scores = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 0.0)
-    assert math.isclose(scores[1], 1.0)
-    assert metric.last_unanswerable == [0.0, 1.0]
+    assert math.isclose(scores[0], 1 / 3)
+    assert math.isclose(scores[1], 2 / 3)
+    assert metric.last_unanswerable == [1 / 3, 2 / 3]
 
 
 def test_mqag_partial_unanswerable():
-    def fake_qg(sentence: str) -> str:
-        return "What does John love?"
+    def fake_qg(sentence: str) -> list[str]:
+        return ["What does John love?", "Where does John live?"]
 
     def fake_qa(question: str, context: str) -> str:
-        if "pizza" in context:
+        if question == "What does John love?" and "pizza" in context:
             return "pizza"
+        if question == "Where does John live?" and "Boston" in context:
+            return "boston"
         return ""
 
     metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
-    sents = ["John loves pizza"]
-    samples = ["John loves pizza", "John hates broccoli"]
+    sents = ["John loves pizza and lives in Boston"]
+    samples = ["John loves pizza in Boston", "John loves pizza"]
     scores = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 0.5)
-    assert metric.last_unanswerable == [0.5]
+    assert math.isclose(scores[0], 0.25)
+    assert metric.last_unanswerable == [0.25]
 
 
 def test_prompt_mapping_yes_no():

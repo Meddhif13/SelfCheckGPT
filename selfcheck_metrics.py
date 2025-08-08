@@ -76,21 +76,25 @@ class SelfCheckMQAG:
     the answers from each sample.  The inconsistency score is the ratio
     of disagreements (``1 - matches/num_samples``).  ``SelfCheckMQAG``
     now always loads a T5-based question generation model and a QA model
-    (DistilBERT by default).  Custom callables ``qg_fn`` and ``qa_fn``
-    can be provided for testing purposes.  For each sentence the method
-    also records the fraction of unanswerable samples in
-    ``last_unanswerable``.
+    (DistilBERT by default).  Multiple questions are generated for each
+    sentence which are individually answered on the samples.  Scores and
+    unanswerable ratios are averaged over these questions.  Custom
+    callables ``qg_fn`` and ``qa_fn`` can be provided for testing
+    purposes.  For each sentence the method also records the fraction of
+    unanswerable samples in ``last_unanswerable``.
     """
 
     def __init__(
         self,
-        qg_fn: Callable[[str], str] | None = None,
+        qg_fn: Callable[[str], Iterable[str]] | None = None,
         qa_fn: Callable[[str, str], str] | None = None,
         batch_size: int = 8,
+        num_questions: int = 3,
     ) -> None:
         self.qg_fn = qg_fn
         self.qa_fn = qa_fn
         self.batch_size = batch_size
+        self.num_questions = max(1, num_questions)
         self.last_unanswerable: List[float] = []
 
         if self.qg_fn is None or self.qa_fn is None:
@@ -116,62 +120,91 @@ class SelfCheckMQAG:
         total = len(samples) or 1
 
         if getattr(self, "qg_pipe", None) is not None:
-            # Batch question generation
-            qg_outputs = self.qg_pipe(sentences, batch_size=self.batch_size)
-            questions = [o["generated_text"].strip() for o in qg_outputs]
-
-            # Reference answers in batch
-            ref_inputs = [
-                {"question": q, "context": s} for q, s in zip(questions, sentences)
-            ]
-            ref_outputs = self.qa_pipe(ref_inputs, batch_size=self.batch_size)
-            ref_answers = [o.get("answer", "").strip().lower() for o in ref_outputs]
-
-            # Sample answers for all question/sample pairs in a single batch
-            qa_inputs = []
-            for sample in samples:
-                qa_inputs.extend(
-                    {"question": q, "context": sample} for q in questions
+            # Generate multiple questions per sentence
+            all_questions: List[List[str]] = []
+            for sent in sentences:
+                outputs = self.qg_pipe(
+                    sent,
+                    num_return_sequences=self.num_questions,
+                    num_beams=self.num_questions,
                 )
-            qa_outputs = self.qa_pipe(qa_inputs, batch_size=self.batch_size)
+                all_questions.append([o["generated_text"].strip() for o in outputs])
 
-            answers_per_question: List[List[str]] = [[] for _ in questions]
-            for j, _sample in enumerate(samples):
-                for i in range(len(questions)):
-                    ans = qa_outputs[j * len(questions) + i].get("answer", "").strip().lower()
-                    answers_per_question[i].append(ans)
+            # Reference answers for every question
+            all_ref_answers: List[List[str]] = []
+            for qs, sent in zip(all_questions, sentences):
+                ref_list = []
+                for q in qs:
+                    ans = (
+                        self.qa_pipe({"question": q, "context": sent})
+                        .get("answer", "")
+                        .strip()
+                        .lower()
+                    )
+                    ref_list.append(ans)
+                all_ref_answers.append(ref_list)
 
             scores: List[float] = []
-            unans_ratios: List[float] = []
-            for ref_answer, ans_list in zip(ref_answers, answers_per_question):
-                matches = sum(1 for ans in ans_list if ans == ref_answer and ans)
-                unans = sum(1 for ans in ans_list if not ans)
-                scores.append(1 - matches / total)
-                unans_ratios.append(unans / total)
+            unans_avgs: List[float] = []
+            for qs, refs in zip(all_questions, all_ref_answers):
+                q_scores: List[float] = []
+                q_unans: List[float] = []
+                for q, ref in zip(qs, refs):
+                    matches = 0
+                    unans = 0
+                    for sample in samples:
+                        ans = (
+                            self.qa_pipe({"question": q, "context": sample})
+                            .get("answer", "")
+                            .strip()
+                            .lower()
+                        )
+                        if not ans:
+                            unans += 1
+                        elif ans == ref and ref:
+                            matches += 1
+                    q_scores.append(1 - matches / total)
+                    q_unans.append(unans / total)
+                scores.append(sum(q_scores) / len(q_scores))
+                unans_avgs.append(sum(q_unans) / len(q_unans))
 
-            self.last_unanswerable = unans_ratios
+            self.last_unanswerable = unans_avgs
             return scores
 
         # Custom functions (typically used in tests)
-        questions = [self.qg_fn(s).strip() for s in sentences]
-        ref_answers = [
-            self.qa_fn(q, s).strip().lower() for q, s in zip(questions, sentences)
-        ]
-        scores: List[float] = []
-        unans_ratios: List[float] = []
-        for q, ref_answer in zip(questions, ref_answers):
-            matches = 0
-            unans = 0
-            for sample in samples:
-                ans = self.qa_fn(q, sample).strip().lower()
-                if not ans:
-                    unans += 1
-                elif ans == ref_answer and ref_answer:
-                    matches += 1
-            scores.append(1 - matches / total)
-            unans_ratios.append(unans / total)
+        all_questions: List[List[str]] = []
+        for s in sentences:
+            q_res = self.qg_fn(s)
+            if isinstance(q_res, str):
+                q_list = [q_res]
+            else:
+                q_list = list(q_res)
+            all_questions.append([q.strip() for q in q_list])
 
-        self.last_unanswerable = unans_ratios
+        all_ref_answers: List[List[str]] = []
+        for qs, s in zip(all_questions, sentences):
+            all_ref_answers.append([self.qa_fn(q, s).strip().lower() for q in qs])
+
+        scores: List[float] = []
+        unans_avgs: List[float] = []
+        for qs, refs in zip(all_questions, all_ref_answers):
+            q_scores: List[float] = []
+            q_unans: List[float] = []
+            for q, ref in zip(qs, refs):
+                matches = 0
+                unans = 0
+                for sample in samples:
+                    ans = self.qa_fn(q, sample).strip().lower()
+                    if not ans:
+                        unans += 1
+                    elif ans == ref and ref:
+                        matches += 1
+                q_scores.append(1 - matches / total)
+                q_unans.append(unans / total)
+            scores.append(sum(q_scores) / len(q_scores))
+            unans_avgs.append(sum(q_unans) / len(q_unans))
+
+        self.last_unanswerable = unans_avgs
         return scores
 
 
