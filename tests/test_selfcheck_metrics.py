@@ -204,6 +204,40 @@ def test_nli_temperature_calibration(monkeypatch):
     assert score == pytest.approx(expected.item())
 
 
+def test_mqag_allows_model_and_device(monkeypatch):
+    import sys
+    import types
+
+    calls: list[tuple] = []
+
+    def fake_pipeline(task, model=None, device=None):
+        calls.append((task, model, device))
+
+        if task == "text2text-generation":
+            def _qg(text, num_return_sequences, num_beams):
+                return [{"generated_text": "Q1"} for _ in range(num_return_sequences)]
+
+            return _qg
+
+        def _qa(inputs):
+            return {"answer": "ans"}
+
+        return _qa
+
+    module = types.SimpleNamespace(pipeline=fake_pipeline)
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+    metric = SelfCheckMQAG(
+        qg_model="t5-large", qa_model="deberta-v3-large", qg_device="cuda:0", qa_device="cuda:1"
+    )
+    metric.predict(["context"], ["sample"])
+
+    qg_call = [c for c in calls if c[0] == "text2text-generation"][0]
+    qa_call = [c for c in calls if c[0] == "question-answering"][0]
+    assert qg_call[1:] == ("t5-large", "cuda:0")
+    assert qa_call[1:] == ("deberta-v3-large", "cuda:1")
+
+
 def test_mqag_multiple_questions():
     def fake_qg(sentence: str) -> list[str]:
         if "John" in sentence:
@@ -232,6 +266,11 @@ def test_mqag_multiple_questions():
     assert math.isclose(scores[0], 1 / 3)
     assert math.isclose(scores[1], 2 / 3)
     assert metric.last_unanswerable == [1 / 3, 2 / 3]
+    assert metric.last_disagreement == scores
+    assert math.isclose(metric.avg_disagreement, sum(scores) / 2)
+    assert math.isclose(
+        metric.avg_unanswerable, sum(metric.last_unanswerable) / 2
+    )
 
 
 def test_mqag_partial_unanswerable():
@@ -251,6 +290,9 @@ def test_mqag_partial_unanswerable():
     scores = metric.predict(sents, samples)
     assert math.isclose(scores[0], 0.25)
     assert metric.last_unanswerable == [0.25]
+    assert metric.last_disagreement == scores
+    assert metric.avg_disagreement == scores[0]
+    assert metric.avg_unanswerable == 0.25
 
 
 def test_prompt_mapping_yes_no():

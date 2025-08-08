@@ -87,13 +87,14 @@ class SelfCheckMQAG:
     reference answer derived from the original sentence is compared with
     the answers from each sample.  The inconsistency score is the ratio
     of disagreements (``1 - matches/num_samples``).  ``SelfCheckMQAG``
-    now always loads a T5-based question generation model and a QA model
-    (DistilBERT by default).  Multiple questions are generated for each
-    sentence which are individually answered on the samples.  Scores and
-    unanswerable ratios are averaged over these questions.  Custom
-    callables ``qg_fn`` and ``qa_fn`` can be provided for testing
-    purposes.  For each sentence the method also records the fraction of
-    unanswerable samples in ``last_unanswerable``.
+    can load arbitrary HuggingFace models for both question generation
+    and answering and allows explicitly setting the device for each
+    pipeline.  By default it uses a T5-based QG model and a DistilBERT QA
+    model.  Multiple questions are generated for each sentence which are
+    individually answered on the samples.  Scores and unanswerable ratios
+    are averaged over these questions and exposed via ``last_disagreement``
+    and ``last_unanswerable``.  The attributes ``avg_disagreement`` and
+    ``avg_unanswerable`` summarize these statistics over all sentences.
     """
 
     def __init__(
@@ -102,23 +103,39 @@ class SelfCheckMQAG:
         qa_fn: Callable[[str, str], str] | None = None,
         batch_size: int = 8,
         num_questions: int = 3,
+        qg_model: str = "valhalla/t5-small-qg-hl",
+        qa_model: str = "distilbert-base-uncased-distilled-squad",
+        qg_device: int | str | None = None,
+        qa_device: int | str | None = None,
     ) -> None:
         self.qg_fn = qg_fn
         self.qa_fn = qa_fn
         self.batch_size = batch_size
         self.num_questions = max(1, num_questions)
         self.last_unanswerable: List[float] = []
+        self.last_disagreement: List[float] = []
+        self.avg_unanswerable: float = 0.0
+        self.avg_disagreement: float = 0.0
 
         if self.qg_fn is None or self.qa_fn is None:
             try:  # pragma: no cover - heavy branch
                 from transformers import pipeline  # type: ignore
+                import torch  # type: ignore
+
+                def _resolve(dev):
+                    if dev is not None:
+                        return dev
+                    return 0 if torch.cuda.is_available() else -1
 
                 self.qg_pipe = pipeline(
-                    "text2text-generation", model="valhalla/t5-small-qg-hl"
+                    "text2text-generation",
+                    model=qg_model,
+                    device=_resolve(qg_device),
                 )
                 self.qa_pipe = pipeline(
                     "question-answering",
-                    model="distilbert-base-uncased-distilled-squad",
+                    model=qa_model,
+                    device=_resolve(qa_device),
                 )
             except Exception as exc:  # pragma: no cover - optional dependency
                 raise RuntimeError("transformers models unavailable") from exc
@@ -181,6 +198,9 @@ class SelfCheckMQAG:
                 unans_avgs.append(sum(q_unans) / len(q_unans))
 
             self.last_unanswerable = unans_avgs
+            self.last_disagreement = scores
+            self.avg_unanswerable = sum(unans_avgs) / len(unans_avgs) if unans_avgs else 0.0
+            self.avg_disagreement = sum(scores) / len(scores) if scores else 0.0
             return scores
 
         # Custom functions (typically used in tests)
@@ -217,6 +237,9 @@ class SelfCheckMQAG:
             unans_avgs.append(sum(q_unans) / len(q_unans))
 
         self.last_unanswerable = unans_avgs
+        self.last_disagreement = scores
+        self.avg_unanswerable = sum(unans_avgs) / len(unans_avgs) if unans_avgs else 0.0
+        self.avg_disagreement = sum(scores) / len(scores) if scores else 0.0
         return scores
 
 
