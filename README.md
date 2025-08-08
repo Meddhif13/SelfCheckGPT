@@ -45,6 +45,22 @@ optionally change the number of evaluated examples with ``--limit``:
 python run_experiments.py --metrics ngram mqag nli --limit 25
 ```
 
+## LLM configuration
+
+Some features such as sample generation (`--resample`) and the `prompt` metric
+require access to an external language model.  The code uses OpenAI's Chat
+Completions API and expects the API key to be available via the
+`OPENAI_API_KEY` environment variable.  The model can be selected with
+`--llm-model`:
+
+```bash
+export OPENAI_API_KEY=sk-YOUR_KEY
+python run_experiments.py --metrics prompt --llm-model gpt-3.5-turbo
+```
+
+The same model is reused for both sample generation and Yes/No judgements.  The
+`--temperature` flag controls sampling temperature.
+
 ## Running tests
 
 ```bash

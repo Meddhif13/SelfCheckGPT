@@ -34,7 +34,7 @@ from sklearn.metrics import (
 )
 
 from data.utils import load_wikibio_hallucination
-from sampling.generator import generate_samples
+from sampling.generator import generate_samples, OpenAIChatLLM
 from selfcheck_metrics import (
     SelfCheckBERTScore,
     SelfCheckMQAG,
@@ -60,28 +60,6 @@ def load_annotations(example: dict) -> List[int]:
 # ---------------------------------------------------------------------------
 
 
-def _prompt_heuristic(context: str, sentence: str) -> str:
-    """Very small stand-in for the real LLM prompt call.
-
-    The function simply checks whether the final token of ``sentence`` appears
-    in ``context`` and returns ``"Yes"`` or ``"No"`` accordingly.  This keeps
-    the example runnable without external API access.
-    """
-
-    token = sentence.split()[-1].strip(". ,") if sentence.split() else ""
-    return "Yes" if token and token in context else "No"
-
-
-def _echo_llm(prompt: str, *, temperature: float) -> str:
-    """Dummy LLM used for the sampling pipeline.
-
-    The function simply echoes the prompt which is sufficient for tests and
-    offline execution.
-    """
-
-    return prompt
-
-
 MetricFactory = Dict[str, Callable[[], object]]
 
 METRICS: MetricFactory = {
@@ -89,7 +67,7 @@ METRICS: MetricFactory = {
     "mqag": SelfCheckMQAG,
     "ngram": SelfCheckNgram,
     "nli": SelfCheckNLI,
-    "prompt": lambda: SelfCheckPrompt(ask_fn=_prompt_heuristic),
+    "prompt": SelfCheckPrompt,
 }
 
 
@@ -219,7 +197,13 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         "--temperature",
         type=float,
         default=0.7,
-        help="Sampling temperature for the dummy LLM.",
+        help="Sampling temperature for the LLM.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default="gpt-3.5-turbo",
+        help="OpenAI model for sampling and prompt-based metric.",
     )
     parser.add_argument(
         "--calib-bins",
@@ -231,6 +215,10 @@ def main() -> None:  # pragma: no cover - exercised via CLI
 
     metric_names = list(METRICS) if "all" in args.metrics else args.metrics
 
+    llm: OpenAIChatLLM | None = None
+    if args.resample or "prompt" in metric_names:
+        llm = OpenAIChatLLM(model=args.llm_model)
+
     logging.info("Loading dataset split '%s' ...", args.split)
     ds = load_wikibio_hallucination(split=args.split)
 
@@ -239,13 +227,13 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         examples = examples[: args.limit]
 
     if args.resample or not all("gpt3_text_samples" in ex for ex in examples):
-        logging.info("Generating samples with dummy LLM ...")
+        logging.info("Generating samples with LLM ...")
         prompts = [" ".join(ex["gpt3_sentences"]) for ex in examples]
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         sample_file = output_dir / "samples.jsonl"
         generate_samples(
-            _echo_llm,
+            llm,
             prompts,
             sample_file,
             num_samples=args.num_samples,
@@ -270,6 +258,8 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         try:
             if name == "ngram":
                 metric = SelfCheckNgram(n=args.ngram_n)
+            elif name == "prompt":
+                metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
             else:
                 metric = METRICS[name]()
             stats = evaluate(metric, examples, bins=args.calib_bins)
