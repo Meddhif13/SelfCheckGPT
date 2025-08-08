@@ -341,11 +341,12 @@ class SelfCheckNLI:
 
     By default :class:`SelfCheckNLI` loads the
     ``microsoft/deberta-base-mnli`` model to obtain Natural Language
-    Inference probabilities.  For each pair of ``(sample, sentence)`` it
-    computes the probability of contradiction and entailment and derives
-    an inconsistency score ``0.5 * (p_contra + (1 - p_entail))``.  Higher
-    scores therefore indicate that the sentence is not supported by the
-    sampled passages.
+    Inference probabilities.  A different model name can be supplied, for
+    example ``microsoft/deberta-large-mnli``.  For each pair of
+    ``(sample, sentence)`` it computes the probability of contradiction and
+    entailment and derives an inconsistency score
+    ``0.5 * (p_contra + (1 - p_entail))``.  Higher scores therefore indicate
+    that the sentence is not supported by the sampled passages.
 
     A custom ``nli_fn`` can be supplied for testing which should accept a
     premise and hypothesis and return a tuple ``(p_contra, p_entail)``.
@@ -355,7 +356,10 @@ class SelfCheckNLI:
         self,
         model: str = "microsoft/deberta-base-mnli",
         nli_fn: Callable[[str, str], tuple[float, float]] | None = None,
+        device: str | None = None,
+        temperature: float = 1.0,
     ) -> None:
+        self.temperature = temperature
         if nli_fn is None:
             try:  # pragma: no cover - heavy branch
                 from transformers import (
@@ -364,8 +368,12 @@ class SelfCheckNLI:
                 )  # type: ignore
                 import torch  # type: ignore
 
+                self.device = torch.device(
+                    device or ("cuda" if torch.cuda.is_available() else "cpu")
+                )
                 self.tokenizer = AutoTokenizer.from_pretrained(model)
                 self.model = AutoModelForSequenceClassification.from_pretrained(model)
+                self.model.to(self.device)
                 self.model.eval()
 
                 def _hf_nli(premise: str, hypothesis: str) -> tuple[float, float]:
@@ -374,9 +382,11 @@ class SelfCheckNLI:
                         hypothesis,
                         return_tensors="pt",
                         truncation=True,
-                    )
+                    ).to(self.device)
                     with torch.no_grad():
                         logits = self.model(**inputs).logits
+                        if self.temperature != 1.0:
+                            logits = logits / self.temperature
                     probs = logits.softmax(dim=-1)[0].tolist()
                     if len(probs) == 3:
                         p_contra, _p_neutral, p_entail = probs
@@ -389,6 +399,7 @@ class SelfCheckNLI:
                 raise RuntimeError("transformers NLI model unavailable") from exc
         else:
             self.nli_fn = nli_fn
+            self.device = device
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
         sentences = list(sentences)

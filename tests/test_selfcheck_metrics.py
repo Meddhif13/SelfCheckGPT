@@ -82,6 +82,117 @@ def test_nli_entailment_and_contradiction():
     assert scores[1] > 0.9  # contradiction
 
 
+def test_nli_allows_model_and_device(monkeypatch):
+    import sys
+    import types
+    import torch
+
+    calls: dict[str, str] = {}
+
+    class _Batch(dict):
+        def to(self, device):  # pragma: no cover - simple stub
+            self["device"] = device
+            return self
+
+    def _tok_from_pretrained(name: str):
+        calls["tokenizer"] = name
+
+        class Tok:
+            def __call__(self, premise, hypothesis, return_tensors, truncation):
+                return _Batch({
+                    "input_ids": torch.tensor([[0]]),
+                    "attention_mask": torch.tensor([[1]]),
+                })
+
+        return Tok()
+
+    class FakeModel:
+        def __init__(self):
+            self.moved_to = None
+
+        def to(self, device):
+            self.moved_to = device
+            return self
+
+        def eval(self):
+            pass
+
+        def __call__(self, **inputs):
+            return types.SimpleNamespace(logits=torch.zeros((1, 3)))
+
+    def _model_from_pretrained(name: str):
+        calls["model"] = name
+        return FakeModel()
+
+    module = types.SimpleNamespace(
+        AutoTokenizer=types.SimpleNamespace(from_pretrained=_tok_from_pretrained),
+        AutoModelForSequenceClassification=types.SimpleNamespace(
+            from_pretrained=_model_from_pretrained
+        ),
+    )
+
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+    metric = SelfCheckNLI(model="deberta-large-mnli", device="cuda")
+
+    assert calls["model"] == "deberta-large-mnli"
+    assert calls["tokenizer"] == "deberta-large-mnli"
+    assert str(metric.model.moved_to) == "cuda"
+
+
+def test_nli_temperature_calibration(monkeypatch):
+    import sys
+    import types
+    import torch
+
+    class _Batch(dict):
+        def to(self, device):  # pragma: no cover - simple stub
+            return self
+
+    def _tok_from_pretrained(name: str):
+        class Tok:
+            def __call__(self, premise, hypothesis, return_tensors, truncation):
+                return _Batch({
+                    "input_ids": torch.tensor([[0]]),
+                    "attention_mask": torch.tensor([[1]]),
+                })
+
+        return Tok()
+
+    class FakeModel:
+        def to(self, device):
+            return self
+
+        def eval(self):
+            pass
+
+        def __call__(self, **inputs):
+            return types.SimpleNamespace(
+                logits=torch.tensor([[1.0, 0.0, -1.0]])
+            )
+
+    def _model_from_pretrained(name: str):
+        return FakeModel()
+
+    module = types.SimpleNamespace(
+        AutoTokenizer=types.SimpleNamespace(from_pretrained=_tok_from_pretrained),
+        AutoModelForSequenceClassification=types.SimpleNamespace(
+            from_pretrained=_model_from_pretrained
+        ),
+    )
+
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+    metric = SelfCheckNLI(model="foo", temperature=2.0)
+    score = metric.predict(["h"], ["p"])[0]
+
+    logits = torch.tensor([[1.0, 0.0, -1.0]]) / 2.0
+    probs = logits.softmax(dim=-1)[0]
+    expected = 0.5 * (probs[0] + (1 - probs[-1]))
+
+    assert score == pytest.approx(expected.item())
+
+
 def test_mqag_multiple_questions():
     def fake_qg(sentence: str) -> list[str]:
         if "John" in sentence:
