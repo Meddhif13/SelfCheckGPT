@@ -19,7 +19,9 @@ metrics on the WikiBio hallucination dataset.  It mirrors the evaluation
 loop of the original project but uses light‑weight stand‑ins so that the
 code runs in restricted environments.  The script now supports running on
 multiple dataset splits and allows configuration of how many sampled
-passages per prompt are used for scoring.
+passages per prompt are used for scoring.  Sampling parameters such as
+temperature, top‑k/top‑p cut‑offs and deterministic mode can be
+configured and swept over.
 
 ## Installation
 
@@ -75,11 +77,16 @@ Completions API and expects the API key to be available via the
 
 ```bash
 export OPENAI_API_KEY=sk-YOUR_KEY
-python run_experiments.py --metrics prompt --llm-model gpt-3.5-turbo
+python run_experiments.py --metrics prompt --llm-model gpt-3.5-turbo --top-p 0.9 --top-k 50
 ```
 
-The same model is reused for both sample generation and Yes/No judgements.  The
-`--temperature` flag controls sampling temperature.
+The same model is reused for both sample generation and Yes/No judgements.
+Generation can be tailored with ``--temperature``, ``--top-k`` and
+``--top-p``.  Passing ``--deterministic`` forces greedy decoding.  The
+``--temperatures`` flag accepts multiple values to run a sweep which
+stores results for each configuration in a separate directory.  When
+``--cache-dir`` is supplied GPU or API based generations are cached on
+disk for reproducibility.
 
 ## Running tests
 
