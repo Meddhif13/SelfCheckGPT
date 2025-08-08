@@ -11,7 +11,7 @@ classes for five scoring strategies:
 * **BERTScore** – semantic similarity to sampled passages.
 * **MQAG** – a tiny proxy for question answering consistency.
 * **n‑gram** – unigram language model scoring.
-* **NLI** – entailment check via substring matching.
+* **NLI** – entailment check using a pretrained NLI model.
 * **LLM Prompt** – ask an external model whether a sentence is supported.
 
 The `run_experiments.py` script can evaluate any of the simplified

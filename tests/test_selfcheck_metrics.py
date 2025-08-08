@@ -68,12 +68,18 @@ def test_ngram_trigram():
     assert scores[1] > scores[0]
 
 
-def test_nli_substring():
-    metric = SelfCheckNLI()
-    sents = ["Paris is in France."]
+def test_nli_entailment_and_contradiction():
+    def fake_nli(premise: str, hypothesis: str) -> tuple[float, float]:
+        if "France" in premise and "France" in hypothesis:
+            return 0.01, 0.95  # entailed
+        return 0.9, 0.05  # contradiction
+
+    metric = SelfCheckNLI(nli_fn=fake_nli)
+    sents = ["Paris is in France.", "Paris is in Spain."]
     samples = ["Paris is in France. It is a city."]
-    score = metric.predict(sents, samples)[0]
-    assert score == 0.0
+    scores = metric.predict(sents, samples)
+    assert scores[0] < 0.1  # entailed
+    assert scores[1] > 0.9  # contradiction
 
 
 def test_mqag_answerable_and_unanswerable():
