@@ -76,8 +76,39 @@ METRICS: MetricFactory = {
 # ---------------------------------------------------------------------------
 
 
-def evaluate(metric, dataset: Iterable[dict], *, bins: int = 10) -> dict:
-    """Return a dictionary with scoring results for ``metric`` on ``dataset``."""
+def _compute_stats(scores: List[float], labels: List[int], *, bins: int = 10) -> dict:
+    """Compute evaluation statistics for ``scores`` against ``labels``."""
+
+    precision_curve, recall_curve, thresholds = precision_recall_curve(labels, scores)
+    ap = average_precision_score(labels, scores)
+
+    preds = [1 if s >= 0.5 else 0 for s in scores]
+    prec = precision_score(labels, preds, zero_division=0)
+    rec = recall_score(labels, preds, zero_division=0)
+    f1 = f1_score(labels, preds, zero_division=0)
+    brier = brier_score_loss(labels, scores)
+
+    bins = max(1, min(bins, len(labels)))
+    prob_true, prob_pred = calibration_curve(
+        labels, scores, n_bins=bins, strategy="quantile"
+    )
+
+    return {
+        "average_precision": ap,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "brier": brier,
+        "pr_curve": (recall_curve, precision_curve),
+        "pr_thresholds": thresholds,
+        "calibration": (prob_pred, prob_true),
+    }
+
+
+def evaluate(
+    metric, dataset: Iterable[dict], *, bins: int = 10, return_scores: bool = False
+) -> dict | tuple[dict, List[float], List[int]]:
+    """Return scoring results and optionally raw scores and labels."""
 
     all_scores: List[float] = []
     all_labels: List[int] = []
@@ -95,32 +126,10 @@ def evaluate(metric, dataset: Iterable[dict], *, bins: int = 10) -> dict:
                 all_scores.append(s)
         all_labels.extend(labels)
 
-    precision_curve, recall_curve, thresholds = precision_recall_curve(
-        all_labels, all_scores
-    )
-    ap = average_precision_score(all_labels, all_scores)
-
-    preds = [1 if s >= 0.5 else 0 for s in all_scores]
-    prec = precision_score(all_labels, preds, zero_division=0)
-    rec = recall_score(all_labels, preds, zero_division=0)
-    f1 = f1_score(all_labels, preds, zero_division=0)
-    brier = brier_score_loss(all_labels, all_scores)
-
-    bins = max(1, min(bins, len(all_labels)))
-    prob_true, prob_pred = calibration_curve(
-        all_labels, all_scores, n_bins=bins, strategy="quantile"
-    )
-
-    return {
-        "average_precision": ap,
-        "precision": prec,
-        "recall": rec,
-        "f1": f1,
-        "brier": brier,
-        "pr_curve": (recall_curve, precision_curve),
-        "pr_thresholds": thresholds,
-        "calibration": (prob_pred, prob_true),
-    }
+    stats = _compute_stats(all_scores, all_labels, bins=bins)
+    if return_scores:
+        return stats, all_scores, all_labels
+    return stats
 
 
 def _save_plots(name: str, stats: dict, out_dir: Path) -> None:
@@ -266,6 +275,8 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         out_dir.mkdir(parents=True, exist_ok=True)
 
         summary_rows: List[dict[str, float | str]] = []
+        score_matrix: dict[str, List[float]] = {}
+        all_labels: List[int] | None = None
         for name in metric_names:
             if name not in METRICS:
                 logging.warning("Unknown metric '%s' -- skipping", name)
@@ -277,10 +288,16 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                     metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
                 else:
                     metric = METRICS[name]()
-                stats = evaluate(metric, examples, bins=args.calib_bins)
+                stats, scores, labels = evaluate(
+                    metric, examples, bins=args.calib_bins, return_scores=True
+                )
             except Exception as exc:  # pragma: no cover - optional dependencies
                 logging.warning("Metric %s failed: %s", name, exc)
                 continue
+
+            if all_labels is None:
+                all_labels = labels
+            score_matrix[name] = scores
 
             _save_plots(name, stats, out_dir)
             summary_rows.append(
@@ -293,6 +310,48 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                     "brier": stats["brier"],
                 }
             )
+
+        # Train and evaluate combiner if we have metric scores
+        if score_matrix and all_labels is not None:
+            try:
+                import numpy as np
+                from selfcheck_combiner import SelfCheckCombiner
+
+                # Create feature matrix with shape (num_samples, num_metrics)
+                feature_names = [n for n in metric_names if n in score_matrix]
+                features = np.column_stack([score_matrix[n] for n in feature_names])
+                labels_arr = np.array(all_labels)
+
+                rng = np.random.default_rng(0)
+                indices = np.arange(len(labels_arr))
+                rng.shuffle(indices)
+                n = len(indices)
+                train_end = max(1, int(0.6 * n))
+                val_end = max(train_end + 1, int(0.8 * n)) if n - train_end > 1 else train_end
+                test_idx = indices[val_end:]
+                if len(test_idx) == 0:
+                    test_idx = indices[-1:]
+                train_idx = indices[:train_end]
+
+                comb = SelfCheckCombiner()
+                comb.fit(features[train_idx], labels_arr[train_idx])
+                test_scores = comb.predict(features[test_idx])
+                test_labels = labels_arr[test_idx].tolist()
+                comb_stats = _compute_stats(test_scores, test_labels, bins=args.calib_bins)
+
+                _save_plots("combined", comb_stats, out_dir)
+                summary_rows.append(
+                    {
+                        "metric": "combined",
+                        "average_precision": comb_stats["average_precision"],
+                        "precision": comb_stats["precision"],
+                        "recall": comb_stats["recall"],
+                        "f1": comb_stats["f1"],
+                        "brier": comb_stats["brier"],
+                    }
+                )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logging.warning("Combiner failed: %s", exc)
 
         if summary_rows:
             summary_path = out_dir / "summary.csv"
