@@ -15,9 +15,11 @@ classes for five scoring strategies:
 * **LLM Prompt** – ask an external model whether a sentence is supported.
 
 The `run_experiments.py` script can evaluate any of the simplified
-metrics on a slice of the WikiBio hallucination dataset.  It mirrors the
-evaluation loop of the original project but uses light‑weight stand‑ins so
-that the code runs in restricted environments.
+metrics on the WikiBio hallucination dataset.  It mirrors the evaluation
+loop of the original project but uses light‑weight stand‑ins so that the
+code runs in restricted environments.  The script now supports running on
+multiple dataset splits and allows configuration of how many sampled
+passages per prompt are used for scoring.
 
 ## Installation
 
@@ -44,6 +46,24 @@ optionally change the number of evaluated examples with ``--limit``:
 ```bash
 python run_experiments.py --metrics ngram mqag nli --limit 25
 ```
+
+Use ``--split`` to select dataset partitions.  Passing ``all`` evaluates
+the train, validation and test splits sequentially, storing results for
+each split in a separate subdirectory inside ``--output-dir``:
+
+```bash
+python run_experiments.py --split all --metrics all --sample-count 5
+```
+
+The ``--sample-count`` flag controls how many sampled passages per
+prompt are used.  When ``--resample`` is given this number of samples is
+regenerated with the lightweight sampling pipeline.  Otherwise the
+pre‑computed samples in the dataset are truncated to the requested count.
+
+Every run writes a ``summary.csv`` file and generates precision/recall
+and calibration plots for each metric, reproducing the statistics
+reported in the paper (precision, recall, F1, average precision, Brier
+score and calibration curves).
 
 ## LLM configuration
 
