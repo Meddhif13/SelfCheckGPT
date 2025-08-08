@@ -130,3 +130,66 @@ def test_prompt_mapping_yes_no():
     samples = ["Observation shows the earth is round.", "The moon orbits"]
     score = metric.predict(sents, samples)[0]
     assert score == 0.5  # one yes and one no
+
+
+def test_prompt_openai_yes_no_mapping(monkeypatch):
+    import types
+
+    class FakeCompletions:
+        def __init__(self):
+            self.responses = ["Yes", "No"]
+            self.calls = 0
+
+        def create(self, model, messages, temperature):
+            resp = self.responses[self.calls]
+            self.calls += 1
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content=resp)
+                    )
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    module = types.ModuleType("openai")
+    instances: list[FakeClient] = []
+
+    def _factory(api_key=None):
+        client = FakeClient(api_key)
+        instances.append(client)
+        return client
+
+    module.OpenAI = _factory
+    module.RateLimitError = Exception
+    monkeypatch.setitem(sys.modules, "openai", module)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+
+    metric = SelfCheckPrompt()
+    sents = ["The earth is round."]
+    samples = ["Observation shows the earth is round.", "The moon orbits"]
+    score = metric.predict(sents, samples)[0]
+    assert score == 0.5
+    assert instances[0].api_key == "test"
+
+
+def test_prompt_caching():
+    calls = []
+
+    def fake_ask(context: str, sentence: str) -> str:
+        calls.append((context, sentence))
+        return "Yes"
+
+    metric = SelfCheckPrompt(ask_fn=fake_ask)
+    sents = ["The earth is round."]
+    samples = [
+        "Observation shows the earth is round.",
+        "Observation shows the earth is round.",
+    ]
+    score = metric.predict(sents, samples)[0]
+    assert score == 0.0
+    assert len(calls) == 1

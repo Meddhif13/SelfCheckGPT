@@ -380,26 +380,60 @@ class SelfCheckPrompt:
 
     The constructor accepts an ``ask_fn`` callable used to query the LLM.
     This makes the class easy to test as the heavy API call can be
-    replaced with a stub.
+    replaced with a stub.  Results are cached so repeated queries with
+    the same context/sentence pair do not trigger additional API calls.
     """
 
-    def __init__(self, ask_fn: Callable[[str, str], str] | None = None) -> None:
-        self.ask_fn = ask_fn or self._openai_ask
+    def __init__(
+        self,
+        ask_fn: Callable[[str, str], str] | None = None,
+        model: str = "gpt-3.5-turbo",
+        max_retries: int = 3,
+        retry_wait: float = 1.0,
+    ) -> None:
+        self.model = model
+        self.max_retries = max_retries
+        self.retry_wait = retry_wait
+        self._client = None
+
+        self._raw_ask = ask_fn or self._openai_ask
+        self._cache: dict[tuple[str, str], str] = {}
+
+        def cached_ask(context: str, sentence: str) -> str:
+            key = (context, sentence)
+            if key not in self._cache:
+                self._cache[key] = self._raw_ask(context, sentence)
+            return self._cache[key]
+
+        self.ask_fn = cached_ask
 
     # -- Actual API call -----------------------------------------------------
-    def _openai_ask(self, context: str, sentence: str) -> str:  # pragma: no cover - requires network
-        import openai
+    def _openai_ask(
+        self, context: str, sentence: str
+    ) -> str:  # pragma: no cover - requires network
+        import os
+        import time
+        from openai import OpenAI, RateLimitError
+
+        if self._client is None:
+            api_key = os.getenv("OPENAI_API_KEY")
+            self._client = OpenAI(api_key=api_key)
 
         prompt = (
             f"Context: {context}\nSentence: {sentence}\n"
             "Is the sentence supported by the context above?\nAnswer Yes or No:"
         )
-        res = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        return res["choices"][0]["message"]["content"].strip()
+        for attempt in range(self.max_retries):
+            try:
+                res = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                )
+                return res.choices[0].message.content.strip()
+            except RateLimitError:
+                time.sleep(self.retry_wait * (2**attempt))
+        raise RuntimeError("OpenAI API request failed after retries")
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
         samples = list(samples)
