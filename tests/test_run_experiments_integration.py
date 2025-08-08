@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -43,3 +44,119 @@ def test_run_experiments_tiny(tmp_path, monkeypatch):
     assert (out_dir / "ngram_calibration.png").exists()
     content = summary.read_text()
     assert "ngram" in content
+
+
+def test_run_experiments_temperature_sweep(tmp_path, monkeypatch):
+    ds = Dataset.from_dict(
+        {
+            "gpt3_sentences": [["Paris is in France."]],
+            "gpt3_text_samples": [["Paris is in France."]],
+            "annotation": [["accurate"]],
+        }
+    )
+
+    monkeypatch.setattr(run_experiments, "load_wikibio_hallucination", lambda split="test": ds)
+
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_experiments.py",
+            "--metrics",
+            "ngram",
+            "--limit",
+            "1",
+            "--output-dir",
+            str(out_dir),
+            "--temperatures",
+            "0.1",
+            "0.2",
+        ],
+    )
+    run_experiments.main()
+
+    assert (out_dir / "temp_0_1" / "summary.csv").exists()
+    assert (out_dir / "temp_0_2" / "summary.csv").exists()
+
+
+def test_run_experiments_passes_sampling_params(tmp_path, monkeypatch):
+    ds = Dataset.from_dict(
+        {
+            "gpt3_sentences": [["Paris is in France."]],
+            "annotation": [["accurate"]],
+        }
+    )
+
+    monkeypatch.setattr(run_experiments, "load_wikibio_hallucination", lambda split="test": ds)
+
+    captured = {}
+
+    def fake_generate(
+        llm,
+        prompts,
+        output_path,
+        *,
+        num_samples,
+        temperature,
+        top_k,
+        top_p,
+        deterministic,
+        cache_dir=None,
+    ):
+        captured.update(
+            {
+                "num_samples": num_samples,
+                "temperature": temperature,
+                "top_k": top_k,
+                "top_p": top_p,
+                "deterministic": deterministic,
+            }
+        )
+        with Path(output_path).open("w", encoding="utf-8") as f:
+            for p in prompts:
+                json.dump({"prompt": p, "sample": "s"}, f)
+                f.write("\n")
+
+    monkeypatch.setattr(run_experiments, "generate_samples", fake_generate)
+
+    class DummyLLM:
+        def ask_yes_no(self, context, sentence):
+            return "Yes"
+
+    monkeypatch.setattr(run_experiments, "OpenAIChatLLM", lambda model: DummyLLM())
+
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_experiments.py",
+            "--metrics",
+            "ngram",
+            "--limit",
+            "1",
+            "--output-dir",
+            str(out_dir),
+            "--resample",
+            "--sample-count",
+            "16",
+            "--temperature",
+            "0.8",
+            "--top-k",
+            "5",
+            "--top-p",
+            "0.9",
+            "--deterministic",
+        ],
+    )
+
+    run_experiments.main()
+
+    assert captured == {
+        "num_samples": 16,
+        "temperature": 0.8,
+        "top_k": 5,
+        "top_p": 0.9,
+        "deterministic": True,
+    }

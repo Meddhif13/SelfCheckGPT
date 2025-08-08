@@ -210,7 +210,37 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         "--temperature",
         type=float,
         default=0.7,
-        help="Sampling temperature for the LLM.",
+        help="Sampling temperature for the LLM (used if --temperatures is not set).",
+    )
+    parser.add_argument(
+        "--temperatures",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional list of temperatures to sweep over.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Top-k sampling cutoff.",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Top-p nucleus sampling cutoff.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Use deterministic sampling (temperature=0).",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=None,
+        help="Directory for caching LLM generations.",
     )
     parser.add_argument(
         "--llm-model",
@@ -239,127 +269,144 @@ def main() -> None:  # pragma: no cover - exercised via CLI
     base_out = Path(args.output_dir)
     base_out.mkdir(parents=True, exist_ok=True)
 
-    for split in split_names:
-        logging.info("Loading dataset split '%s' ...", split)
-        ds = load_wikibio_hallucination(split=split)
+    temps = args.temperatures if args.temperatures is not None else [args.temperature]
 
-        examples = list(ds)
-        if args.limit is not None:
-            examples = examples[: args.limit]
+    for temp in temps:
+        logging.info(
+            "Running configuration: temperature=%s top_k=%s top_p=%s deterministic=%s",
+            temp,
+            args.top_k,
+            args.top_p,
+            args.deterministic,
+        )
+        temp_dir = base_out / f"temp_{str(temp).replace('.', '_')}" if len(temps) > 1 else base_out
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
-        if args.resample or not all("gpt3_text_samples" in ex for ex in examples):
-            logging.info("Generating samples with LLM ...")
-            prompts = [" ".join(ex["gpt3_sentences"]) for ex in examples]
-            out_dir = base_out / split if len(split_names) > 1 else base_out
-            out_dir.mkdir(parents=True, exist_ok=True)
-            sample_file = out_dir / "samples.jsonl"
-            generate_samples(
-                llm,
-                prompts,
-                sample_file,
-                num_samples=args.sample_count,
-                temperature=args.temperature,
-            )
-            prompt_to_samples: dict[str, list[str]] = collections.defaultdict(list)
-            with sample_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    obj = json.loads(line)
-                    prompt_to_samples[obj["prompt"]].append(obj["sample"])
-            for ex, prompt in zip(examples, prompts):
-                ex["gpt3_text_samples"] = prompt_to_samples[prompt]
-        else:
-            for ex in examples:
-                ex["gpt3_text_samples"] = ex.get("gpt3_text_samples", [])[: args.sample_count]
+        for split in split_names:
+            logging.info("Loading dataset split '%s' ...", split)
+            ds = load_wikibio_hallucination(split=split)
 
-        out_dir = base_out / split if len(split_names) > 1 else base_out
-        out_dir.mkdir(parents=True, exist_ok=True)
+            examples = list(ds)
+            if args.limit is not None:
+                examples = examples[: args.limit]
 
-        summary_rows: List[dict[str, float | str]] = []
-        score_matrix: dict[str, List[float]] = {}
-        all_labels: List[int] | None = None
-        for name in metric_names:
-            if name not in METRICS:
-                logging.warning("Unknown metric '%s' -- skipping", name)
-                continue
-            try:
-                if name == "ngram":
-                    metric = SelfCheckNgram(n=args.ngram_n)
-                elif name == "prompt":
-                    metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
-                else:
-                    metric = METRICS[name]()
-                stats, scores, labels = evaluate(
-                    metric, examples, bins=args.calib_bins, return_scores=True
+            if args.resample or not all("gpt3_text_samples" in ex for ex in examples):
+                logging.info("Generating samples with LLM ...")
+                prompts = [" ".join(ex["gpt3_sentences"]) for ex in examples]
+                out_dir = temp_dir / split if len(split_names) > 1 else temp_dir
+                out_dir.mkdir(parents=True, exist_ok=True)
+                sample_file = out_dir / "samples.jsonl"
+                generate_samples(
+                    llm,
+                    prompts,
+                    sample_file,
+                    num_samples=args.sample_count,
+                    temperature=temp,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    deterministic=args.deterministic,
+                    cache_dir=args.cache_dir,
                 )
-            except Exception as exc:  # pragma: no cover - optional dependencies
-                logging.warning("Metric %s failed: %s", name, exc)
-                continue
+                prompt_to_samples: dict[str, list[str]] = collections.defaultdict(list)
+                with sample_file.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        obj = json.loads(line)
+                        prompt_to_samples[obj["prompt"]].append(obj["sample"])
+                for ex, prompt in zip(examples, prompts):
+                    ex["gpt3_text_samples"] = prompt_to_samples[prompt]
+            else:
+                for ex in examples:
+                    ex["gpt3_text_samples"] = ex.get("gpt3_text_samples", [])[: args.sample_count]
 
-            if all_labels is None:
-                all_labels = labels
-            score_matrix[name] = scores
+            out_dir = temp_dir / split if len(split_names) > 1 else temp_dir
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-            _save_plots(name, stats, out_dir)
-            summary_rows.append(
-                {
-                    "metric": name,
-                    "average_precision": stats["average_precision"],
-                    "precision": stats["precision"],
-                    "recall": stats["recall"],
-                    "f1": stats["f1"],
-                    "brier": stats["brier"],
-                }
-            )
+            summary_rows: List[dict[str, float | str]] = []
+            score_matrix: dict[str, List[float]] = {}
+            all_labels: List[int] | None = None
+            for name in metric_names:
+                if name not in METRICS:
+                    logging.warning("Unknown metric '%s' -- skipping", name)
+                    continue
+                try:
+                    if name == "ngram":
+                        metric = SelfCheckNgram(n=args.ngram_n)
+                    elif name == "prompt":
+                        metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
+                    else:
+                        metric = METRICS[name]()
+                    stats, scores, labels = evaluate(
+                        metric, examples, bins=args.calib_bins, return_scores=True
+                    )
+                except Exception as exc:  # pragma: no cover - optional dependencies
+                    logging.warning("Metric %s failed: %s", name, exc)
+                    continue
 
-        # Train and evaluate combiner if we have metric scores
-        if score_matrix and all_labels is not None:
-            try:
-                import numpy as np
-                from selfcheck_combiner import SelfCheckCombiner
+                if all_labels is None:
+                    all_labels = labels
+                score_matrix[name] = scores
 
-                # Create feature matrix with shape (num_samples, num_metrics)
-                feature_names = [n for n in metric_names if n in score_matrix]
-                features = np.column_stack([score_matrix[n] for n in feature_names])
-                labels_arr = np.array(all_labels)
-
-                rng = np.random.default_rng(0)
-                indices = np.arange(len(labels_arr))
-                rng.shuffle(indices)
-                n = len(indices)
-                train_end = max(1, int(0.6 * n))
-                val_end = max(train_end + 1, int(0.8 * n)) if n - train_end > 1 else train_end
-                test_idx = indices[val_end:]
-                if len(test_idx) == 0:
-                    test_idx = indices[-1:]
-                train_idx = indices[:train_end]
-
-                comb = SelfCheckCombiner()
-                comb.fit(features[train_idx], labels_arr[train_idx])
-                test_scores = comb.predict(features[test_idx])
-                test_labels = labels_arr[test_idx].tolist()
-                comb_stats = _compute_stats(test_scores, test_labels, bins=args.calib_bins)
-
-                _save_plots("combined", comb_stats, out_dir)
+                _save_plots(name, stats, out_dir)
                 summary_rows.append(
                     {
-                        "metric": "combined",
-                        "average_precision": comb_stats["average_precision"],
-                        "precision": comb_stats["precision"],
-                        "recall": comb_stats["recall"],
-                        "f1": comb_stats["f1"],
-                        "brier": comb_stats["brier"],
+                        "metric": name,
+                        "average_precision": stats["average_precision"],
+                        "precision": stats["precision"],
+                        "recall": stats["recall"],
+                        "f1": stats["f1"],
+                        "brier": stats["brier"],
                     }
                 )
-            except Exception as exc:  # pragma: no cover - optional dependency
-                logging.warning("Combiner failed: %s", exc)
 
-        if summary_rows:
-            summary_path = out_dir / "summary.csv"
-            with summary_path.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
-                writer.writeheader()
-                writer.writerows(summary_rows)
-            logging.info("Wrote results to %s", summary_path)
+            # Train and evaluate combiner if we have metric scores
+            if score_matrix and all_labels is not None:
+                try:
+                    import numpy as np
+                    from selfcheck_combiner import SelfCheckCombiner
+
+                    # Create feature matrix with shape (num_samples, num_metrics)
+                    feature_names = [n for n in metric_names if n in score_matrix]
+                    features = np.column_stack([score_matrix[n] for n in feature_names])
+                    labels_arr = np.array(all_labels)
+
+                    rng = np.random.default_rng(0)
+                    indices = np.arange(len(labels_arr))
+                    rng.shuffle(indices)
+                    n = len(indices)
+                    train_end = max(1, int(0.6 * n))
+                    val_end = max(train_end + 1, int(0.8 * n)) if n - train_end > 1 else train_end
+                    test_idx = indices[val_end:]
+                    if len(test_idx) == 0:
+                        test_idx = indices[-1:]
+                    train_idx = indices[:train_end]
+
+                    comb = SelfCheckCombiner()
+                    comb.fit(features[train_idx], labels_arr[train_idx])
+                    test_scores = comb.predict(features[test_idx])
+                    test_labels = labels_arr[test_idx].tolist()
+                    comb_stats = _compute_stats(test_scores, test_labels, bins=args.calib_bins)
+
+                    _save_plots("combined", comb_stats, out_dir)
+                    summary_rows.append(
+                        {
+                            "metric": "combined",
+                            "average_precision": comb_stats["average_precision"],
+                            "precision": comb_stats["precision"],
+                            "recall": comb_stats["recall"],
+                            "f1": comb_stats["f1"],
+                            "brier": comb_stats["brier"],
+                        }
+                    )
+                except Exception as exc:  # pragma: no cover - optional dependency
+                    logging.warning("Combiner failed: %s", exc)
+
+            if summary_rows:
+                summary_path = out_dir / "summary.csv"
+                with summary_path.open("w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
+                    writer.writeheader()
+                    writer.writerows(summary_rows)
+                logging.info("Wrote results to %s", summary_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
