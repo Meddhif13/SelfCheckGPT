@@ -304,18 +304,70 @@ class SelfCheckNgram:
 # ---------------------------------------------------------------------------
 
 class SelfCheckNLI:
-    """Toy NLI scorer based on substring matching.
+    """NLI based scorer using a pretrained model.
 
-    The real implementation would use a trained NLI model.  Here we
-    simply check whether each sentence appears in the sample passages.
+    By default :class:`SelfCheckNLI` loads the
+    ``microsoft/deberta-base-mnli`` model to obtain Natural Language
+    Inference probabilities.  For each pair of ``(sample, sentence)`` it
+    computes the probability of contradiction and entailment and derives
+    an inconsistency score ``0.5 * (p_contra + (1 - p_entail))``.  Higher
+    scores therefore indicate that the sentence is not supported by the
+    sampled passages.
+
+    A custom ``nli_fn`` can be supplied for testing which should accept a
+    premise and hypothesis and return a tuple ``(p_contra, p_entail)``.
     """
 
+    def __init__(
+        self,
+        model: str = "microsoft/deberta-base-mnli",
+        nli_fn: Callable[[str, str], tuple[float, float]] | None = None,
+    ) -> None:
+        if nli_fn is None:
+            try:  # pragma: no cover - heavy branch
+                from transformers import (
+                    AutoModelForSequenceClassification,
+                    AutoTokenizer,
+                )  # type: ignore
+                import torch  # type: ignore
+
+                self.tokenizer = AutoTokenizer.from_pretrained(model)
+                self.model = AutoModelForSequenceClassification.from_pretrained(model)
+                self.model.eval()
+
+                def _hf_nli(premise: str, hypothesis: str) -> tuple[float, float]:
+                    inputs = self.tokenizer(
+                        premise,
+                        hypothesis,
+                        return_tensors="pt",
+                        truncation=True,
+                    )
+                    with torch.no_grad():
+                        logits = self.model(**inputs).logits
+                    probs = logits.softmax(dim=-1)[0].tolist()
+                    if len(probs) == 3:
+                        p_contra, _p_neutral, p_entail = probs
+                    else:  # pragma: no cover - edge case
+                        p_contra, p_entail = probs[0], probs[-1]
+                    return float(p_contra), float(p_entail)
+
+                self.nli_fn = _hf_nli
+            except Exception as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError("transformers NLI model unavailable") from exc
+        else:
+            self.nli_fn = nli_fn
+
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
-        sample_text = " ".join(s.lower() for s in samples)
+        sentences = list(sentences)
+        samples = list(samples)
+        total = len(samples) or 1
         scores: List[float] = []
         for sent in sentences:
-            score = 0.0 if sent.lower() in sample_text else 1.0
-            scores.append(score)
+            agg = 0.0
+            for sample in samples:
+                p_contra, p_entail = self.nli_fn(sample, sent)
+                agg += 0.5 * (p_contra + (1 - p_entail))
+            scores.append(agg / total)
         return scores
 
 
