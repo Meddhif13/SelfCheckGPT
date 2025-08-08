@@ -180,22 +180,122 @@ class SelfCheckMQAG:
 # ---------------------------------------------------------------------------
 
 class SelfCheckNgram:
-    """Unigram-based approximation used for hallucination detection."""
+    """n-gram based approximation used for hallucination detection.
 
-    def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
-        counter = collections.Counter()
+    Parameters
+    ----------
+    n: int, optional
+        Order of the language model (default 1).
+    smoothing: str, optional
+        Smoothing method to use.  Supported values are ``"backoff"`` and
+        ``"kneser_ney"`` (default ``"backoff"``).
+    """
+
+    def __init__(self, n: int = 1, smoothing: str = "backoff", discount: float = 0.75) -> None:
+        self.n = max(1, n)
+        self.smoothing = smoothing
+        self.discount = discount
+
+    # -- Utility -------------------------------------------------------------
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        return text.lower().split()
+
+    def _build_model(self, samples: Iterable[str]):
+        counts = [collections.Counter() for _ in range(self.n)]
+        followers = [collections.defaultdict(set) for _ in range(max(0, self.n - 1))]
+        histories = collections.defaultdict(set)
+
         for text in samples:
-            counter.update(text.lower().split())
-        vocab_size = len(counter) or 1
-        total = sum(counter.values()) + vocab_size
+            tokens = self._tokenize(text)
+            for i in range(len(tokens)):
+                for k in range(1, self.n + 1):
+                    if i + k <= len(tokens):
+                        gram = tuple(tokens[i : i + k])
+                        counts[k - 1][gram] += 1
+                        if self.smoothing == "kneser_ney" and k < self.n and i + k < len(tokens):
+                            followers[k - 1][gram].add(tokens[i + k])
+                if self.smoothing == "kneser_ney" and i > 0:
+                    histories[(tokens[i],)].add(tokens[i - 1])
+
+        total_tokens = sum(counts[0].values())
+        vocab_size = len(counts[0]) or 1
+        total_continuations = sum(len(v) for v in histories.values()) or 1
+        return counts, followers, histories, total_tokens, vocab_size, total_continuations
+
+    # -- Probability estimation ---------------------------------------------
+    def _prob_backoff(
+        self,
+        gram: tuple[str, ...],
+        counts: list[collections.Counter],
+        total_tokens: int,
+        vocab_size: int,
+    ) -> float:
+        k = len(gram)
+        if k == 0:
+            return 1.0 / vocab_size
+        if k == 1:
+            return (counts[0].get(gram, 0) + 1) / (total_tokens + vocab_size)
+        count = counts[k - 1].get(gram, 0)
+        if count > 0:
+            prefix = gram[:-1]
+            prefix_count = counts[k - 2].get(prefix, 0)
+            return (count + 1) / (prefix_count + vocab_size)
+        return self._prob_backoff(gram[1:], counts, total_tokens, vocab_size)
+
+    def _prob_kneser_ney(
+        self,
+        gram: tuple[str, ...],
+        counts: list[collections.Counter],
+        followers: list[collections.defaultdict],
+        histories: collections.defaultdict,
+        total_continuations: int,
+        vocab_size: int,
+    ) -> float:
+        k = len(gram)
+        if k == 1:
+            cont = len(histories.get(gram, []))
+            if total_continuations == 0:
+                return 1.0 / vocab_size
+            return cont / total_continuations
+        count = counts[k - 1].get(gram, 0)
+        prefix = gram[:-1]
+        prefix_count = counts[k - 2].get(prefix, 0)
+        if prefix_count == 0:
+            return self._prob_kneser_ney(
+                gram[1:], counts, followers, histories, total_continuations, vocab_size
+            )
+        uniq = len(followers[k - 2].get(prefix, []))
+        discount = self.discount
+        lower = self._prob_kneser_ney(
+            gram[1:], counts, followers, histories, total_continuations, vocab_size
+        )
+        return max(count - discount, 0) / prefix_count + (discount * uniq / prefix_count) * lower
+
+    # -- Public API ----------------------------------------------------------
+    def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
+        counts, followers, histories, total_tokens, vocab_size, total_continuations = self._build_model(samples)
         scores: List[float] = []
+
         for sent in sentences:
+            tokens = self._tokenize(sent)
+            if len(tokens) < self.n:
+                grams = [tuple(tokens)]
+            else:
+                grams = [tuple(tokens[i : i + self.n]) for i in range(len(tokens) - self.n + 1)]
+
             min_prob = 1.0
-            for tok in sent.lower().split():
-                prob = (counter.get(tok, 0) + 1) / total
+            for gram in grams:
+                if self.smoothing == "kneser_ney":
+                    prob = self._prob_kneser_ney(
+                        gram, counts, followers, histories, total_continuations, vocab_size
+                    )
+                else:
+                    prob = self._prob_backoff(gram, counts, total_tokens, vocab_size)
                 if prob < min_prob:
                     min_prob = prob
             scores.append(-math.log(min_prob))
+
         return scores
 
 

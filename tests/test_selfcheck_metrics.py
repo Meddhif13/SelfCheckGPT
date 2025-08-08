@@ -54,6 +54,19 @@ def test_ngram_rare_word():
     scores = metric.predict(sents, samples)
     assert scores[1] > scores[0]
 
+def test_ngram_bigram():
+    samples = ["a b c", "a b d"]
+    metric = SelfCheckNgram(n=2)
+    scores = metric.predict(["a b c", "a c b"], samples)
+    assert scores[1] > scores[0]
+
+
+def test_ngram_trigram():
+    samples = ["a b c d", "a b e d"]
+    metric = SelfCheckNgram(n=3)
+    scores = metric.predict(["a b c d", "a c b d"], samples)
+    assert scores[1] > scores[0]
+
 
 def test_nli_substring():
     metric = SelfCheckNLI()

@@ -94,6 +94,12 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         default=50,
         help="Number of test examples to load from the dataset.",
     )
+    parser.add_argument(
+        "--ngram-n",
+        type=int,
+        default=1,
+        help="Order of the n-gram model used by the 'ngram' metric.",
+    )
     args = parser.parse_args()
 
     metric_names = list(METRICS) if "all" in args.metrics else args.metrics
@@ -107,7 +113,10 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         if name not in METRICS:
             logging.warning("Unknown metric '%s' -- skipping", name)
             continue
-        metric = METRICS[name]()
+        if name == "ngram":
+            metric = SelfCheckNgram(n=args.ngram_n)
+        else:
+            metric = METRICS[name]()
         ap = evaluate(metric, ds)
         logging.info("%s average precision: %.3f", name, ap)
 
