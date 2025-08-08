@@ -63,26 +63,43 @@ def test_nli_substring():
     assert score == 0.0
 
 
-def test_mqag_last_token():
-    metric = SelfCheckMQAG()
-    sents = ["John loves pizza"]
-    samples = ["Yesterday John ate pizza"]
-    score = metric.predict(sents, samples)[0]
-    assert math.isclose(score, 0.0)
+def test_mqag_answerable_and_unanswerable():
+    def fake_qg(sentence: str) -> str:
+        if "John" in sentence:
+            return "What does John love?"
+        return "What does Lucy climb?"
+
+    def fake_qa(question: str, context: str) -> str:
+        if "John" in question and "pizza" in context:
+            return "pizza"
+        if "Lucy" in question and "trees" in context:
+            return "trees"
+        return ""
+
+    metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
+    sents = ["John loves pizza", "Lucy climbs trees"]
+    samples = ["Yesterday John ate pizza", "John still loves pizza"]
+    scores = metric.predict(sents, samples)
+    assert math.isclose(scores[0], 0.0)
+    assert math.isclose(scores[1], 1.0)
+    assert metric.last_unanswerable == [0.0, 1.0]
 
 
-def test_mqag_qg_qa_scoring():
+def test_mqag_partial_unanswerable():
     def fake_qg(sentence: str) -> str:
         return "What does John love?"
 
     def fake_qa(question: str, context: str) -> str:
-        return "pizza" if "pizza" in context else "unknown"
+        if "pizza" in context:
+            return "pizza"
+        return ""
 
     metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
     sents = ["John loves pizza"]
-    samples = ["Yesterday John ate pizza", "John prefers pasta"]
-    score = metric.predict(sents, samples)[0]
-    assert math.isclose(score, 0.5)
+    samples = ["John loves pizza", "John hates broccoli"]
+    scores = metric.predict(sents, samples)
+    assert math.isclose(scores[0], 0.5)
+    assert metric.last_unanswerable == [0.5]
 
 
 def test_prompt_mapping_yes_no():

@@ -74,77 +74,104 @@ class SelfCheckMQAG:
     from every sentence and runs a QA model over sampled passages.  The
     reference answer derived from the original sentence is compared with
     the answers from each sample.  The inconsistency score is the ratio
-    of disagreements (``1 - matches/num_samples``).
-
-    To keep this project lightweight the heavy question generation and
-    QA models are optional.  ``SelfCheckMQAG`` can be instantiated with
-    custom callables ``qg_fn`` and ``qa_fn`` for generating questions and
-    answers respectively.  When ``use_hf=True`` the class attempts to
-    load small HuggingFace models (T5 for question generation and
-    DistilBERT for QA).  If the models are unavailable, a simple fallback
-    heuristic is used where the "answer" is assumed to be the final token
-    of the sentence.
+    of disagreements (``1 - matches/num_samples``).  ``SelfCheckMQAG``
+    now always loads a T5-based question generation model and a QA model
+    (DistilBERT by default).  Custom callables ``qg_fn`` and ``qa_fn``
+    can be provided for testing purposes.  For each sentence the method
+    also records the fraction of unanswerable samples in
+    ``last_unanswerable``.
     """
 
     def __init__(
         self,
         qg_fn: Callable[[str], str] | None = None,
         qa_fn: Callable[[str, str], str] | None = None,
-        use_hf: bool = False,
+        batch_size: int = 8,
     ) -> None:
         self.qg_fn = qg_fn
         self.qa_fn = qa_fn
+        self.batch_size = batch_size
+        self.last_unanswerable: List[float] = []
 
         if self.qg_fn is None or self.qa_fn is None:
-            if use_hf:
-                try:  # pragma: no cover - heavy branch
-                    from transformers import pipeline  # type: ignore
+            try:  # pragma: no cover - heavy branch
+                from transformers import pipeline  # type: ignore
 
-                    qg_pipe = pipeline(
-                        "text2text-generation", model="valhalla/t5-small-qg-hl"
-                    )
-                    qa_pipe = pipeline(
-                        "question-answering",
-                        model="distilbert-base-uncased-distilled-squad",
-                    )
-
-                    self.qg_fn = lambda s: qg_pipe(s)[0]["generated_text"]
-                    self.qa_fn = lambda q, c: qa_pipe(question=q, context=c)["answer"]
-                except Exception:
-                    # If the heavy models cannot be loaded the object will
-                    # fall back to the light-weight heuristic implemented in
-                    # ``predict`` below.
-                    self.qg_fn = None
-                    self.qa_fn = None
+                self.qg_pipe = pipeline(
+                    "text2text-generation", model="valhalla/t5-small-qg-hl"
+                )
+                self.qa_pipe = pipeline(
+                    "question-answering",
+                    model="distilbert-base-uncased-distilled-squad",
+                )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError("transformers models unavailable") from exc
+        else:
+            self.qg_pipe = None
+            self.qa_pipe = None
 
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
+        sentences = list(sentences)
         samples = list(samples)
-        scores: List[float] = []
+        total = len(samples) or 1
 
-        if self.qg_fn is not None and self.qa_fn is not None:
-            for sent in sentences:
-                question = self.qg_fn(sent).strip()
-                if not question:
-                    scores.append(1.0)
-                    continue
-                ref_answer = self.qa_fn(question, sent).strip().lower()
-                matches = 0
-                for sample in samples:
-                    ans = self.qa_fn(question, sample).strip().lower()
-                    if ans == ref_answer and ans:
-                        matches += 1
-                score = 1 - matches / max(1, len(samples))
-                scores.append(float(score))
+        if getattr(self, "qg_pipe", None) is not None:
+            # Batch question generation
+            qg_outputs = self.qg_pipe(sentences, batch_size=self.batch_size)
+            questions = [o["generated_text"].strip() for o in qg_outputs]
+
+            # Reference answers in batch
+            ref_inputs = [
+                {"question": q, "context": s} for q, s in zip(questions, sentences)
+            ]
+            ref_outputs = self.qa_pipe(ref_inputs, batch_size=self.batch_size)
+            ref_answers = [o.get("answer", "").strip().lower() for o in ref_outputs]
+
+            # Sample answers for all question/sample pairs in a single batch
+            qa_inputs = []
+            for sample in samples:
+                qa_inputs.extend(
+                    {"question": q, "context": sample} for q in questions
+                )
+            qa_outputs = self.qa_pipe(qa_inputs, batch_size=self.batch_size)
+
+            answers_per_question: List[List[str]] = [[] for _ in questions]
+            for j, _sample in enumerate(samples):
+                for i in range(len(questions)):
+                    ans = qa_outputs[j * len(questions) + i].get("answer", "").strip().lower()
+                    answers_per_question[i].append(ans)
+
+            scores: List[float] = []
+            unans_ratios: List[float] = []
+            for ref_answer, ans_list in zip(ref_answers, answers_per_question):
+                matches = sum(1 for ans in ans_list if ans == ref_answer and ans)
+                unans = sum(1 for ans in ans_list if not ans)
+                scores.append(1 - matches / total)
+                unans_ratios.append(unans / total)
+
+            self.last_unanswerable = unans_ratios
             return scores
 
-        # -- Fallback heuristic ------------------------------------------------
-        for sent in sentences:
-            if not sent.split():
-                scores.append(0.0)
-                continue
-            answer = sent.split()[-1].strip(". ,")
-            missing = sum(1 for s in samples if answer not in s)
-            scores.append(missing / max(1, len(samples)))
+        # Custom functions (typically used in tests)
+        questions = [self.qg_fn(s).strip() for s in sentences]
+        ref_answers = [
+            self.qa_fn(q, s).strip().lower() for q, s in zip(questions, sentences)
+        ]
+        scores: List[float] = []
+        unans_ratios: List[float] = []
+        for q, ref_answer in zip(questions, ref_answers):
+            matches = 0
+            unans = 0
+            for sample in samples:
+                ans = self.qa_fn(q, sample).strip().lower()
+                if not ans:
+                    unans += 1
+                elif ans == ref_answer and ref_answer:
+                    matches += 1
+            scores.append(1 - matches / total)
+            unans_ratios.append(unans / total)
+
+        self.last_unanswerable = unans_ratios
         return scores
 
 
