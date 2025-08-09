@@ -118,6 +118,8 @@ def evaluate(
         scores = metric.predict(sentences, samples)
         if isinstance(scores, tuple):  # MQAG returns (scores, answerability)
             scores, _ = scores
+        elif isinstance(scores, dict):  # ngram returns detailed stats
+            scores = scores.get("sentence_scores", [])
         labels = load_annotations(example)
         # Ensure scores fall into [0, 1]. Some metrics (e.g. ngram) return
         # unbounded values which we squash using ``1 - exp(-score)``.

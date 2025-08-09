@@ -63,20 +63,30 @@ def test_ngram_rare_word():
     sents = ["common word", "rare token"]
     samples = ["common word common word"]
     scores = metric.predict(sents, samples)
-    assert scores[1] > scores[0]
+    assert scores["sentence_scores"][1] > scores["sentence_scores"][0]
 
 def test_ngram_bigram():
     samples = ["a b c", "a b d"]
     metric = SelfCheckNgram(n=2)
     scores = metric.predict(["a b c", "a c b"], samples)
-    assert scores[1] > scores[0]
+    assert scores["sentence_scores"][1] > scores["sentence_scores"][0]
 
 
 def test_ngram_trigram():
     samples = ["a b c d", "a b e d"]
     metric = SelfCheckNgram(n=3)
     scores = metric.predict(["a b c d", "a c b d"], samples)
-    assert scores[1] > scores[0]
+    assert scores["sentence_scores"][1] > scores["sentence_scores"][0]
+
+
+def test_ngram_document_aggregates():
+    samples = ["a a a"]
+    metric = SelfCheckNgram()
+    result = metric.predict(["a a", "a b"], samples)
+    expected_avg = math.log(4) / 4
+    expected_max = math.log(4) / 2
+    assert result["avg_neg_logprob"] == pytest.approx(expected_avg, abs=1e-6)
+    assert result["avg_max_neg_logprob"] == pytest.approx(expected_max, abs=1e-6)
 
 
 def test_nli_entailment_and_contradiction():
