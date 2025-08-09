@@ -23,6 +23,13 @@ def _load_bertscore():
         pytest.skip(f"BERTScore model unavailable: {e}")
 
 
+def _load_nli():
+    try:
+        return SelfCheckNLI(model="microsoft/deberta-v3-large-mnli")
+    except Exception as e:  # pragma: no cover - dependent on external model
+        pytest.skip(f"NLI model unavailable: {e}")
+
+
 def _expected(metric: SelfCheckBERTScore, sent: str, samples: list[str]) -> float:
     scores: list[float] = []
     for sample in samples:
@@ -96,6 +103,15 @@ def test_nli_entailment_and_contradiction():
         return [2.0, 0.0, 0.0]  # contradiction
 
     metric = SelfCheckNLI(nli_fn=fake_nli)
+    sents = ["Paris is in France.", "Paris is in Spain."]
+    samples = ["Paris is in France. It is a city."]
+    scores = metric.predict(sents, samples)
+    assert scores[0] < 0.5
+    assert scores[1] > 0.5
+
+
+def test_nli_model_entailment_contradiction():
+    metric = _load_nli()
     sents = ["Paris is in France.", "Paris is in Spain."]
     samples = ["Paris is in France. It is a city."]
     scores = metric.predict(sents, samples)
@@ -209,7 +225,7 @@ def test_nli_temperature_calibration(monkeypatch):
 
     logits = torch.tensor([[1.0, 0.0, -1.0]]) / 2.0
     probs = logits.softmax(dim=-1)[0]
-    expected = max(probs[0], 1 - probs[-1])
+    expected = probs[0]
 
     assert score == pytest.approx(expected.item())
 
