@@ -112,8 +112,15 @@ class SelfCheckMQAG:
         self.qa_fn = qa_fn
         self.batch_size = batch_size
         self.num_questions = max(1, num_questions)
-        self.last_unanswerable: List[float] = []
+        # Per-sentence disagreement scores and answerability statistics
         self.last_disagreement: List[float] = []
+        # ``last_answerability`` stores per-question answerability ratios for
+        # every sentence.  ``avg_answerability`` summarizes them globally.  For
+        # backward compatibility we also expose ``last_unanswerable`` and
+        # ``avg_unanswerable`` which are derived from the answerability values.
+        self.last_answerability: List[List[float]] = []
+        self.last_unanswerable: List[float] = []
+        self.avg_answerability: float = 0.0
         self.avg_unanswerable: float = 0.0
         self.avg_disagreement: float = 0.0
 
@@ -143,104 +150,144 @@ class SelfCheckMQAG:
             self.qg_pipe = None
             self.qa_pipe = None
 
-    def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
+    def predict(
+        self,
+        sentences: Iterable[str],
+        samples: Iterable[str],
+        *,
+        scoring_method: str = "counting",
+        beta1: float = 0.1,
+        beta2: float = 0.5,
+        answerability_threshold: float = 0.5,
+    ) -> tuple[List[float], List[List[float]]]:
+        """Score ``sentences`` against ``samples``.
+
+        Parameters
+        ----------
+        sentences, samples:
+            Main passage sentences and sampled passages.
+        scoring_method: {"counting", "bayes", "bayes_with_alpha"}
+            Strategy used to convert matches into inconsistency scores.
+        beta1, beta2:
+            Beta hyper-parameters for Bayesian scoring.
+        answerability_threshold: float
+            Minimum answerability score for a sample to be considered in the
+            counting and vanilla Bayes methods.
+        """
+
         sentences = list(sentences)
         samples = list(samples)
         total = len(samples) or 1
+        assert scoring_method in {"counting", "bayes", "bayes_with_alpha"}
 
+        # Prepare question generation and answering helpers
         if getattr(self, "qg_pipe", None) is not None:
-            # Generate multiple questions per sentence
-            all_questions: List[List[str]] = []
-            for sent in sentences:
+            def _gen_questions(text: str) -> List[str]:
                 outputs = self.qg_pipe(
-                    sent,
+                    text,
                     num_return_sequences=self.num_questions,
                     num_beams=self.num_questions,
                 )
-                all_questions.append([o["generated_text"].strip() for o in outputs])
+                return [o["generated_text"].strip() for o in outputs]
 
-            # Reference answers for every question
-            all_ref_answers: List[List[str]] = []
-            for qs, sent in zip(all_questions, sentences):
-                ref_list = []
-                for q in qs:
-                    ans = (
-                        self.qa_pipe({"question": q, "context": sent})
-                        .get("answer", "")
-                        .strip()
-                        .lower()
-                    )
-                    ref_list.append(ans)
-                all_ref_answers.append(ref_list)
+            def _answer(q: str, ctx: str) -> str:
+                return (
+                    self.qa_pipe({"question": q, "context": ctx})
+                    .get("answer", "")
+                    .strip()
+                    .lower()
+                )
+        else:
+            def _gen_questions(text: str) -> List[str]:
+                q_res = self.qg_fn(text)
+                if isinstance(q_res, str):
+                    return [q_res.strip()]
+                return [q.strip() for q in q_res]
 
-            scores: List[float] = []
-            unans_avgs: List[float] = []
-            for qs, refs in zip(all_questions, all_ref_answers):
-                q_scores: List[float] = []
-                q_unans: List[float] = []
-                for q, ref in zip(qs, refs):
-                    matches = 0
-                    unans = 0
-                    for sample in samples:
-                        ans = (
-                            self.qa_pipe({"question": q, "context": sample})
-                            .get("answer", "")
-                            .strip()
-                            .lower()
-                        )
-                        if not ans:
-                            unans += 1
-                        elif ans == ref and ref:
-                            matches += 1
-                    q_scores.append(1 - matches / total)
-                    q_unans.append(unans / total)
-                scores.append(sum(q_scores) / len(q_scores))
-                unans_avgs.append(sum(q_unans) / len(q_unans))
+            def _answer(q: str, ctx: str) -> str:
+                return self.qa_fn(q, ctx).strip().lower()
 
-            self.last_unanswerable = unans_avgs
-            self.last_disagreement = scores
-            self.avg_unanswerable = sum(unans_avgs) / len(unans_avgs) if unans_avgs else 0.0
-            self.avg_disagreement = sum(scores) / len(scores) if scores else 0.0
-            return scores
+        all_questions: List[List[str]] = [_gen_questions(s) for s in sentences]
+        all_ref_answers: List[List[str]] = [
+            [_answer(q, s) for q in qs] for qs, s in zip(all_questions, sentences)
+        ]
 
-        # Custom functions (typically used in tests)
-        all_questions: List[List[str]] = []
-        for s in sentences:
-            q_res = self.qg_fn(s)
-            if isinstance(q_res, str):
-                q_list = [q_res]
-            else:
-                q_list = list(q_res)
-            all_questions.append([q.strip() for q in q_list])
-
-        all_ref_answers: List[List[str]] = []
-        for qs, s in zip(all_questions, sentences):
-            all_ref_answers.append([self.qa_fn(q, s).strip().lower() for q in qs])
-
-        scores: List[float] = []
-        unans_avgs: List[float] = []
+        sent_scores: List[float] = []
+        answerability_stats: List[List[float]] = []
         for qs, refs in zip(all_questions, all_ref_answers):
             q_scores: List[float] = []
-            q_unans: List[float] = []
+            q_ans_stats: List[float] = []
             for q, ref in zip(qs, refs):
+                ref_ans_score = 1.0 if ref else 0.0
                 matches = 0
-                unans = 0
+                mismatches = 0
+                soft_match = 0.0
+                soft_mismatch = 0.0
+                answerable = 0
                 for sample in samples:
-                    ans = self.qa_fn(q, sample).strip().lower()
-                    if not ans:
-                        unans += 1
-                    elif ans == ref and ref:
-                        matches += 1
-                q_scores.append(1 - matches / total)
-                q_unans.append(unans / total)
-            scores.append(sum(q_scores) / len(q_scores))
-            unans_avgs.append(sum(q_unans) / len(q_unans))
+                    ans = _answer(q, sample)
+                    ans_score = 1.0 if ans else 0.0
+                    if ans_score >= answerability_threshold:
+                        answerable += 1
+                        if ans == ref and ref:
+                            matches += 1
+                        else:
+                            mismatches += 1
+                    if ans == ref and ref:
+                        soft_match += ans_score
+                    else:
+                        soft_mismatch += ans_score
+                q_ans_stats.append(answerable / total)
 
-        self.last_unanswerable = unans_avgs
-        self.last_disagreement = scores
-        self.avg_unanswerable = sum(unans_avgs) / len(unans_avgs) if unans_avgs else 0.0
-        self.avg_disagreement = sum(scores) / len(scores) if scores else 0.0
-        return scores
+                if scoring_method == "counting":
+                    if ref_ans_score < answerability_threshold:
+                        score = 0.5
+                    elif answerable == 0:
+                        score = 0.5
+                    else:
+                        score = (answerable - matches) / answerable
+                elif scoring_method == "bayes":
+                    if ref_ans_score < answerability_threshold:
+                        score = 0.5
+                    else:
+                        gamma1 = beta2 / (1.0 - beta1)
+                        gamma2 = beta1 / (1.0 - beta2)
+                        score = (gamma2 ** mismatches) / (
+                            (gamma1 ** matches) + (gamma2 ** mismatches)
+                        )
+                else:  # bayes_with_alpha
+                    gamma1 = beta2 / (1.0 - beta1)
+                    gamma2 = beta1 / (1.0 - beta2)
+                    score = (gamma2 ** soft_mismatch) / (
+                        (gamma1 ** soft_match) + (gamma2 ** soft_mismatch)
+                    )
+                q_scores.append(score)
+
+            sent_scores.append(sum(q_scores) / len(q_scores))
+            answerability_stats.append(q_ans_stats)
+
+        self.last_disagreement = sent_scores
+        self.last_answerability = answerability_stats
+
+        # Per-sentence and global statistics derived from the per-question data
+        self.last_unanswerable = [
+            1 - (sum(qs) / len(qs) if qs else 0.0) for qs in answerability_stats
+        ]
+        if answerability_stats:
+            total_q = sum(len(qs) for qs in answerability_stats)
+            self.avg_answerability = sum(sum(qs) for qs in answerability_stats) / total_q
+        else:
+            self.avg_answerability = 0.0
+        self.avg_unanswerable = (
+            sum(self.last_unanswerable) / len(self.last_unanswerable)
+            if self.last_unanswerable
+            else 0.0
+        )
+        self.avg_disagreement = (
+            sum(sent_scores) / len(sent_scores) if sent_scores else 0.0
+        )
+
+        return sent_scores, answerability_stats
 
 
 # ---------------------------------------------------------------------------
