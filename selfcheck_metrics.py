@@ -19,9 +19,49 @@ the corresponding model weights.
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, List
+from typing import Callable, Iterable, List, Sequence
 import collections
 import math
+
+
+def find_optimal_temperature(
+    logits: Iterable[Sequence[float]], labels: Iterable[int]
+) -> float:
+    """Compute the temperature that minimizes NLL on validation logits.
+
+    Parameters
+    ----------
+    logits:
+        Iterable of raw logits for each validation example.
+    labels:
+        Iterable of gold label indices corresponding to the logits.
+
+    Returns
+    -------
+    float
+        Optimal temperature scalar.
+    """
+
+    try:  # pragma: no cover - optional dependency
+        import torch
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("PyTorch is required for temperature calibration") from exc
+
+    logits_t = torch.tensor(list(logits), dtype=torch.float)
+    labels_t = torch.tensor(list(labels), dtype=torch.long)
+
+    temperature = torch.ones(1, requires_grad=True, dtype=torch.float)
+    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    def _eval():
+        optimizer.zero_grad()
+        loss = criterion(logits_t / temperature, labels_t)
+        loss.backward()
+        return loss
+
+    optimizer.step(_eval)
+    return float(temperature.item())
 
 
 # ---------------------------------------------------------------------------
@@ -472,13 +512,12 @@ class SelfCheckNLI:
     """NLI based scorer using a pretrained model.
 
     By default :class:`SelfCheckNLI` loads the
-    ``microsoft/deberta-base-mnli`` model to obtain Natural Language
-    Inference probabilities.  A different model name can be supplied, for
-    example ``microsoft/deberta-large-mnli``.  For each pair of
-    ``(sample, sentence)`` it computes the probability of contradiction and
-    entailment and derives an inconsistency score
-    ``0.5 * (p_contra + (1 - p_entail))``.  Higher scores therefore indicate
-    that the sentence is not supported by the sampled passages.
+    ``microsoft/deberta-v3-large-mnli`` model to obtain Natural Language
+    Inference probabilities.  A different model name can be supplied.  For
+    each pair of ``(sample, sentence)`` it computes the probability of
+    contradiction and entailment and derives an inconsistency score
+    ``max(p_contra, 1 - p_entail)``.  Higher scores therefore indicate that
+    the sentence is not supported by the sampled passages.
 
     A custom ``nli_fn`` can be supplied for testing which should accept a
     premise and hypothesis and return a tuple ``(p_contra, p_entail)``.
@@ -486,7 +525,7 @@ class SelfCheckNLI:
 
     def __init__(
         self,
-        model: str = "microsoft/deberta-base-mnli",
+        model: str = "microsoft/deberta-v3-large-mnli",
         nli_fn: Callable[[str, str], tuple[float, float]] | None = None,
         device: str | None = None,
         temperature: float = 1.0,
@@ -542,7 +581,7 @@ class SelfCheckNLI:
             agg = 0.0
             for sample in samples:
                 p_contra, p_entail = self.nli_fn(sample, sent)
-                agg += 0.5 * (p_contra + (1 - p_entail))
+                agg += max(p_contra, 1 - p_entail)
             scores.append(agg / total)
         return scores
 

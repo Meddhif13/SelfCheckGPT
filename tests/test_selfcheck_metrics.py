@@ -99,8 +99,8 @@ def test_nli_entailment_and_contradiction():
     sents = ["Paris is in France.", "Paris is in Spain."]
     samples = ["Paris is in France. It is a city."]
     scores = metric.predict(sents, samples)
-    assert scores[0] < 0.1  # entailed
-    assert scores[1] > 0.9  # contradiction
+    assert math.isclose(scores[0], 0.05)
+    assert math.isclose(scores[1], 0.95)
 
 
 def test_nli_allows_model_and_device(monkeypatch):
@@ -209,9 +209,28 @@ def test_nli_temperature_calibration(monkeypatch):
 
     logits = torch.tensor([[1.0, 0.0, -1.0]]) / 2.0
     probs = logits.softmax(dim=-1)[0]
-    expected = 0.5 * (probs[0] + (1 - probs[-1]))
+    expected = max(probs[0], 1 - probs[-1])
 
     assert score == pytest.approx(expected.item())
+
+
+def test_find_optimal_temperature():
+    import torch
+    from selfcheck_metrics import find_optimal_temperature
+
+    logits = [[1.0, 0.0, -1.0], [1.0, 0.0, -1.0]]
+    labels = [0, 2]
+
+    t = find_optimal_temperature(logits, labels)
+    base = torch.nn.functional.cross_entropy(
+        torch.tensor(logits), torch.tensor(labels)
+    )
+    calibrated = torch.nn.functional.cross_entropy(
+        torch.tensor(logits) / t, torch.tensor(labels)
+    )
+
+    assert t > 0
+    assert calibrated <= base
 
 
 def test_mqag_allows_model_and_device(monkeypatch):
