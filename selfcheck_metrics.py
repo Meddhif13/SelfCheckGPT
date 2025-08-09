@@ -388,18 +388,55 @@ class SelfCheckNgram:
         return max(count - discount, 0) / prefix_count + (discount * uniq / prefix_count) * lower
 
     # -- Public API ----------------------------------------------------------
-    def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
+    def predict(
+        self,
+        sentences: Iterable[str],
+        samples: Iterable[str],
+        *,
+        n: int | None = None,
+    ) -> dict[str, list[float] | float]:
+        """Estimate n-gram probabilities for ``sentences``.
+
+        Parameters
+        ----------
+        sentences:
+            Sentences from the main passage to score.
+        samples:
+            Sampled passages used to build the n-gram model.
+        n: int, optional
+            Override the n-gram order specified at construction time.
+
+        Returns
+        -------
+        dict
+            A dictionary containing per-sentence average and maximum negative
+            log probabilities as well as document level aggregates:
+
+            ``{
+                'sentence_scores': [...],
+                'sentence_max_scores': [...],
+                'avg_neg_logprob': float,
+                'avg_max_neg_logprob': float
+            }``
+        """
+
+        order = max(1, n or self.n)
+        self_n_backup = self.n
+        self.n = order
         counts, followers, histories, total_tokens, vocab_size, total_continuations = self._build_model(samples)
-        scores: List[float] = []
+        self.n = self_n_backup
+
+        sent_avgs: List[float] = []
+        sent_maxes: List[float] = []
 
         for sent in sentences:
             tokens = self._tokenize(sent)
-            if len(tokens) < self.n:
-                grams = [tuple(tokens)]
+            if len(tokens) < order:
+                grams = [tuple(tokens)] if tokens else []
             else:
-                grams = [tuple(tokens[i : i + self.n]) for i in range(len(tokens) - self.n + 1)]
+                grams = [tuple(tokens[i : i + order]) for i in range(len(tokens) - order + 1)]
 
-            min_prob = 1.0
+            neg_logs: List[float] = []
             for gram in grams:
                 if self.smoothing == "kneser_ney":
                     prob = self._prob_kneser_ney(
@@ -407,11 +444,24 @@ class SelfCheckNgram:
                     )
                 else:
                     prob = self._prob_backoff(gram, counts, total_tokens, vocab_size)
-                if prob < min_prob:
-                    min_prob = prob
-            scores.append(-math.log(min_prob))
+                neg_logs.append(-math.log(max(prob, 1e-12)))
 
-        return scores
+            if neg_logs:
+                sent_avgs.append(sum(neg_logs) / len(neg_logs))
+                sent_maxes.append(max(neg_logs))
+            else:
+                sent_avgs.append(0.0)
+                sent_maxes.append(0.0)
+
+        avg_neg = sum(sent_avgs) / len(sent_avgs) if sent_avgs else 0.0
+        avg_max_neg = sum(sent_maxes) / len(sent_maxes) if sent_maxes else 0.0
+
+        return {
+            "sentence_scores": sent_avgs,
+            "sentence_max_scores": sent_maxes,
+            "avg_neg_logprob": avg_neg,
+            "avg_max_neg_logprob": avg_max_neg,
+        }
 
 
 # ---------------------------------------------------------------------------
