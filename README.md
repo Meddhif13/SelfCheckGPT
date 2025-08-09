@@ -54,13 +54,21 @@ the train, validation and test splits sequentially, storing results for
 each split in a separate subdirectory inside ``--output-dir``:
 
 ```bash
-python run_experiments.py --split all --metrics all --sample-count 5
+python run_experiments.py --split all --metrics all --sample-count 20
 ```
 
 The ``--sample-count`` flag controls how many sampled passages per
 prompt are used.  When ``--resample`` is given this number of samples is
 regenerated with the lightweight sampling pipeline.  Otherwise the
 pre‑computed samples in the dataset are truncated to the requested count.
+By default the script now follows the paper and uses 20 samples per
+prompt.
+
+The logistic‑regression combiner can optionally be evaluated with
+stratified ``k``‑fold cross‑validation via ``--cv-folds`` (default: 5).
+To mirror the exact settings from the paper, pass ``--paper-config``
+which enables resampling, sets ``--sample-count`` to 20 and applies the
+original top‑k/top‑p cut‑offs.
 
 Every run writes a ``summary.csv`` file and generates precision/recall
 and calibration plots for each metric, reproducing the statistics
