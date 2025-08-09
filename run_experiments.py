@@ -207,7 +207,7 @@ def main() -> None:  # pragma: no cover - exercised via CLI
     parser.add_argument(
         "--sample-count",
         type=int,
-        default=1,
+        default=20,
         help="Number of samples per prompt to use or generate.",
     )
     parser.add_argument(
@@ -258,7 +258,35 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         default=10,
         help="Number of bins for the calibration curve.",
     )
+    parser.add_argument(
+        "--cv-folds",
+        type=int,
+        default=5,
+        help="Number of stratified folds for combiner cross-validation (set to 1 to disable).",
+    )
+    parser.add_argument(
+        "--paper-config",
+        action="store_true",
+        help=(
+            "Use configuration matching the SelfCheckGPT paper (20 samples, top-k=50, top-p=0.95, resampling, 5-fold CV)."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.paper_config:
+        args.sample_count = 20
+        if args.top_k is None:
+            args.top_k = 50
+        if args.top_p is None:
+            args.top_p = 0.95
+        args.resample = True
+        args.cv_folds = max(args.cv_folds, 5)
+
+    if (args.top_k is not None or args.top_p is not None) and not args.resample:
+        logging.info(
+            "top-k/top-p provided without --resample; enabling resampling to match settings"
+        )
+        args.resample = True
 
     metric_names = list(METRICS) if "all" in args.metrics else args.metrics
 
@@ -366,6 +394,7 @@ def main() -> None:  # pragma: no cover - exercised via CLI
             if score_matrix and all_labels is not None:
                 try:
                     import numpy as np
+                    from sklearn.model_selection import StratifiedKFold
                     from selfcheck_combiner import SelfCheckCombiner
 
                     # Create feature matrix with shape (num_samples, num_metrics)
@@ -373,22 +402,54 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                     features = np.column_stack([score_matrix[n] for n in feature_names])
                     labels_arr = np.array(all_labels)
 
-                    rng = np.random.default_rng(0)
-                    indices = np.arange(len(labels_arr))
-                    rng.shuffle(indices)
-                    n = len(indices)
-                    train_end = max(1, int(0.6 * n))
-                    val_end = max(train_end + 1, int(0.8 * n)) if n - train_end > 1 else train_end
-                    test_idx = indices[val_end:]
-                    if len(test_idx) == 0:
-                        test_idx = indices[-1:]
-                    train_idx = indices[:train_end]
+                    comb_stats = None
+                    if args.cv_folds and args.cv_folds > 1:
+                        unique, counts = np.unique(labels_arr, return_counts=True)
+                        min_class = counts.min()
+                        n_splits = min(args.cv_folds, min_class)
+                        if n_splits > 1:
+                            skf = StratifiedKFold(
+                                n_splits=n_splits, shuffle=True, random_state=0
+                            )
+                            cv_scores: list[float] = []
+                            cv_labels: list[int] = []
+                            for train_idx, test_idx in skf.split(features, labels_arr):
+                                comb = SelfCheckCombiner()
+                                comb.fit(features[train_idx], labels_arr[train_idx])
+                                cv_scores.extend(comb.predict(features[test_idx]))
+                                cv_labels.extend(labels_arr[test_idx].tolist())
+                            comb_stats = _compute_stats(
+                                cv_scores, cv_labels, bins=args.calib_bins
+                            )
+                        else:
+                            logging.warning(
+                                "Not enough samples per class for %d-fold CV; using hold-out split",
+                                args.cv_folds,
+                            )
 
-                    comb = SelfCheckCombiner()
-                    comb.fit(features[train_idx], labels_arr[train_idx])
-                    test_scores = comb.predict(features[test_idx])
-                    test_labels = labels_arr[test_idx].tolist()
-                    comb_stats = _compute_stats(test_scores, test_labels, bins=args.calib_bins)
+                    if comb_stats is None:
+                        rng = np.random.default_rng(0)
+                        indices = np.arange(len(labels_arr))
+                        rng.shuffle(indices)
+                        n = len(indices)
+                        train_end = max(1, int(0.6 * n))
+                        val_end = (
+                            max(train_end + 1, int(0.8 * n))
+                            if n - train_end > 1
+                            else train_end
+                        )
+                        test_idx = indices[val_end:]
+                        if len(test_idx) == 0:
+                            test_idx = indices[-1:]
+                        train_idx = indices[:train_end]
+
+                        comb = SelfCheckCombiner()
+                        comb.fit(features[train_idx], labels_arr[train_idx])
+                        test_scores = comb.predict(features[test_idx])
+                        test_labels = labels_arr[test_idx].tolist()
+                        comb_stats = _compute_stats(
+                            test_scores, test_labels, bins=args.calib_bins
+                        )
 
                     _save_plots("combined", comb_stats, out_dir)
                     summary_rows.append(
