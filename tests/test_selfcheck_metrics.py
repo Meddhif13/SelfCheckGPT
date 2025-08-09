@@ -262,12 +262,22 @@ def test_mqag_multiple_questions():
         "John still loves pizza",
         "Yesterday Lucy climbed trees",
     ]
-    scores = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 1 / 3)
-    assert math.isclose(scores[1], 2 / 3)
-    assert metric.last_unanswerable == [1 / 3, 2 / 3]
+    scores, ans_stats = metric.predict(sents, samples)
+    assert math.isclose(scores[0], 0.0)
+    assert math.isclose(scores[1], 0.0)
+    assert all(
+        math.isclose(a, b)
+        for row, ref in zip(ans_stats, [[2 / 3, 2 / 3], [1 / 3, 1 / 3]])
+        for a, b in zip(row, ref)
+    )
+    assert metric.last_answerability == ans_stats
     assert metric.last_disagreement == scores
     assert math.isclose(metric.avg_disagreement, sum(scores) / 2)
+    assert math.isclose(metric.avg_answerability, 0.5)
+    assert all(
+        math.isclose(a, b)
+        for a, b in zip(metric.last_unanswerable, [1 / 3, 2 / 3])
+    )
     assert math.isclose(
         metric.avg_unanswerable, sum(metric.last_unanswerable) / 2
     )
@@ -287,12 +297,51 @@ def test_mqag_partial_unanswerable():
     metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
     sents = ["John loves pizza and lives in Boston"]
     samples = ["John loves pizza in Boston", "John loves pizza"]
-    scores = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 0.25)
-    assert metric.last_unanswerable == [0.25]
+    scores, ans_stats = metric.predict(sents, samples)
+    assert math.isclose(scores[0], 0.0)
+    assert ans_stats == [[1.0, 0.5]]
+    assert metric.last_answerability == ans_stats
     assert metric.last_disagreement == scores
     assert metric.avg_disagreement == scores[0]
+    assert math.isclose(metric.avg_answerability, 0.75)
+    assert metric.last_unanswerable == [0.25]
     assert metric.avg_unanswerable == 0.25
+
+
+def test_mqag_bayes_methods():
+    def fake_qg(sentence: str) -> list[str]:
+        return ["What does John love?"]
+
+    def fake_qa(question: str, context: str) -> str:
+        if question == "What does John love?" and "pizza" in context:
+            return "pizza"
+        if question == "What does John love?" and "pasta" in context:
+            return "pasta"
+        return ""
+
+    metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
+    sents = ["John loves pizza"]
+    samples = ["John loves pizza", "John loves pasta"]
+    beta1, beta2 = 0.1, 0.6
+    scores_bayes, _ = metric.predict(
+        sents,
+        samples,
+        scoring_method="bayes",
+        beta1=beta1,
+        beta2=beta2,
+    )
+    scores_alpha, _ = metric.predict(
+        sents,
+        samples,
+        scoring_method="bayes_with_alpha",
+        beta1=beta1,
+        beta2=beta2,
+    )
+    gamma1 = beta2 / (1 - beta1)
+    gamma2 = beta1 / (1 - beta2)
+    expected = (gamma2 ** 1) / ((gamma1 ** 1) + (gamma2 ** 1))
+    assert math.isclose(scores_bayes[0], expected)
+    assert scores_bayes == scores_alpha
 
 
 def test_prompt_mapping_yes_no():
