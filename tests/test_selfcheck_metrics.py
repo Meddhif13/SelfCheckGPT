@@ -426,3 +426,49 @@ def test_prompt_caching():
     score = metric.predict(sents, samples)[0]
     assert score == 0.0
     assert len(calls) == 1
+
+
+def test_prompt_custom_mapping():
+    def fake_ask(context: str, sentence: str) -> str:
+        # Echo the context so mapping can decide on the value
+        return context
+
+    mapping = {"good": 0.0, "bad": 1.0}
+
+    def map_fn(ans: str) -> float:
+        return mapping.get(ans, 0.5)
+
+    metric = SelfCheckPrompt(ask_fn=fake_ask, map_fn=map_fn)
+    sents = ["The earth is round."]
+    samples = ["good", "bad"]
+    score = metric.predict(sents, samples)[0]
+    assert score == 0.5
+
+
+def test_prompt_hf_backend(monkeypatch):
+    import sys
+    import types
+
+    class DummyPipe:
+        def __init__(self):
+            self.last_prompt = None
+
+        def __call__(self, prompt, **kwargs):
+            self.last_prompt = prompt
+            return [{"generated_text": "Yes"}]
+
+    pipe = DummyPipe()
+
+    transformers_mod = types.SimpleNamespace(pipeline=lambda *a, **k: pipe)
+    torch_mod = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False)
+    )
+
+    monkeypatch.setitem(sys.modules, "transformers", transformers_mod)
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+
+    metric = SelfCheckPrompt(hf_model="dummy")
+    metric.set_prompt_template("C:{context}|S:{sentence}")
+    score = metric.predict(["s"], ["c"])[0]
+    assert score == 0.0  # 'Yes' maps to 0.0 by default
+    assert pipe.last_prompt == "C:c|S:s"

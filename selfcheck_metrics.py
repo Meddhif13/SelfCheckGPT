@@ -558,7 +558,17 @@ class SelfCheckPrompt:
     This makes the class easy to test as the heavy API call can be
     replaced with a stub.  Results are cached so repeated queries with
     the same context/sentence pair do not trigger additional API calls.
+
+    ``SelfCheckPrompt`` also supports running a local HuggingFace
+    ``transformers`` model instead of the OpenAI API and allows
+    customizing both the question template and the mapping from raw model
+    outputs to numerical scores.
     """
+
+    _DEFAULT_TEMPLATE = (
+        "Context: {context}\nSentence: {sentence}\n"
+        "Is the sentence supported by the context above?\nAnswer Yes or No:"
+    )
 
     def __init__(
         self,
@@ -566,13 +576,45 @@ class SelfCheckPrompt:
         model: str = "gpt-3.5-turbo",
         max_retries: int = 3,
         retry_wait: float = 1.0,
+        *,
+        prompt_template: str | None = None,
+        map_fn: Callable[[str], float] | None = None,
+        hf_model: str | None = None,
+        hf_device: int | str | None = None,
+        hf_max_new_tokens: int = 16,
     ) -> None:
         self.model = model
         self.max_retries = max_retries
         self.retry_wait = retry_wait
+        self.prompt_template = prompt_template or self._DEFAULT_TEMPLATE
+        self.map_fn = map_fn or self._default_map
         self._client = None
+        self._hf_pipe = None
+        self._hf_max_new_tokens = hf_max_new_tokens
 
-        self._raw_ask = ask_fn or self._openai_ask
+        if ask_fn is not None:
+            self._raw_ask = ask_fn
+        elif hf_model is not None:
+            try:  # pragma: no cover - optional dependency
+                from transformers import pipeline  # type: ignore
+                import torch  # type: ignore
+
+                def _resolve(dev):
+                    if dev is not None:
+                        return dev
+                    return 0 if torch.cuda.is_available() else -1
+
+                self._hf_pipe = pipeline(
+                    "text-generation",
+                    model=hf_model,
+                    device=_resolve(hf_device),
+                )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError("transformers models unavailable") from exc
+            self._raw_ask = self._hf_ask
+        else:
+            self._raw_ask = self._openai_ask
+
         self._cache: dict[tuple[str, str], str] = {}
 
         def cached_ask(context: str, sentence: str) -> str:
@@ -583,7 +625,13 @@ class SelfCheckPrompt:
 
         self.ask_fn = cached_ask
 
-    # -- Actual API call -----------------------------------------------------
+    # -- configuration -------------------------------------------------------
+    def set_prompt_template(self, template: str) -> None:
+        """Set a new prompt ``template`` for Yes/No questions."""
+
+        self.prompt_template = template
+
+    # -- backends ------------------------------------------------------------
     def _openai_ask(
         self, context: str, sentence: str
     ) -> str:  # pragma: no cover - requires network
@@ -595,10 +643,7 @@ class SelfCheckPrompt:
             api_key = os.getenv("OPENAI_API_KEY")
             self._client = OpenAI(api_key=api_key)
 
-        prompt = (
-            f"Context: {context}\nSentence: {sentence}\n"
-            "Is the sentence supported by the context above?\nAnswer Yes or No:"
-        )
+        prompt = self.prompt_template.format(context=context, sentence=sentence)
         for attempt in range(self.max_retries):
             try:
                 res = self._client.chat.completions.create(
@@ -611,20 +656,35 @@ class SelfCheckPrompt:
                 time.sleep(self.retry_wait * (2**attempt))
         raise RuntimeError("OpenAI API request failed after retries")
 
+    def _hf_ask(self, context: str, sentence: str) -> str:
+        prompt = self.prompt_template.format(context=context, sentence=sentence)
+        assert self._hf_pipe is not None  # for mypy
+        res = self._hf_pipe(
+            prompt,
+            max_new_tokens=self._hf_max_new_tokens,
+            return_full_text=False,
+        )
+        return res[0]["generated_text"].strip()
+
+    # -- default mapping -----------------------------------------------------
+    @staticmethod
+    def _default_map(ans: str) -> float:
+        ans = ans.strip().lower()
+        if ans.startswith("y"):
+            return 0.0
+        if ans.startswith("n"):
+            return 1.0
+        return 0.5
+
+    # -- prediction ----------------------------------------------------------
     def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
         samples = list(samples)
         scores: List[float] = []
         for sent in sentences:
             total = 0.0
             for sample in samples:
-                ans = self.ask_fn(sample, sent).strip().lower()
-                if ans.startswith("y"):
-                    val = 0.0
-                elif ans.startswith("n"):
-                    val = 1.0
-                else:
-                    val = 0.5
-                total += val
+                ans = self.ask_fn(sample, sent)
+                total += self.map_fn(ans)
             scores.append(total / max(1, len(samples)))
         return scores
 
