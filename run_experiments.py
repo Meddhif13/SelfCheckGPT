@@ -41,6 +41,7 @@ from selfcheck_metrics import (
     SelfCheckNLI,
     SelfCheckNgram,
     SelfCheckPrompt,
+    find_optimal_temperature,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -350,6 +351,34 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                 for ex in examples:
                     ex["gpt3_text_samples"] = ex.get("gpt3_text_samples", [])[: args.sample_count]
 
+            nli_temperature = 1.0
+            if "nli" in metric_names and len(examples) > 1:
+                val_count = max(1, int(0.1 * len(examples)))
+                val_examples = examples[:val_count]
+                examples = examples[val_count:]
+                if not examples:
+                    examples, val_examples = val_examples[-1:], val_examples[:-1]
+                try:
+                    metric_cal = SelfCheckNLI()
+                    calib_logits: list[list[float]] = []
+                    calib_labels: list[int] = []
+                    for ex in val_examples:
+                        _, per_sent_logits = metric_cal.predict(
+                            ex["gpt3_sentences"],
+                            ex["gpt3_text_samples"],
+                            return_logits=True,
+                        )
+                        labels = load_annotations(ex)
+                        for lbl, sent_logits in zip(labels, per_sent_logits):
+                            for logit in sent_logits:
+                                calib_logits.append(logit)
+                                calib_labels.append(lbl)
+                    nli_temperature = find_optimal_temperature(
+                        calib_logits, calib_labels
+                    )
+                except Exception as exc:  # pragma: no cover - optional dependency
+                    logging.warning("NLI temperature calibration failed: %s", exc)
+
             out_dir = temp_dir / split if len(split_names) > 1 else temp_dir
             out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -365,6 +394,8 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                         metric = SelfCheckNgram(n=args.ngram_n)
                     elif name == "prompt":
                         metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
+                    elif name == "nli":
+                        metric = SelfCheckNLI(temperature=nli_temperature)
                     else:
                         metric = METRICS[name]()
                     stats, scores, labels = evaluate(

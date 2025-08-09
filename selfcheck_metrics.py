@@ -540,13 +540,16 @@ class SelfCheckNLI:
     the sentence is not supported by the sampled passages.
 
     A custom ``nli_fn`` can be supplied for testing which should accept a
-    premise and hypothesis and return a tuple ``(p_contra, p_entail)``.
+    premise and hypothesis and return raw logits for the NLI labels.  The
+    logits are expected to follow the usual MNLI convention where index ``0``
+    corresponds to ``contradiction`` and the last index denotes
+    ``entailment``.
     """
 
     def __init__(
         self,
         model: str = "microsoft/deberta-v3-large-mnli",
-        nli_fn: Callable[[str, str], tuple[float, float]] | None = None,
+        nli_fn: Callable[[str, str], Sequence[float]] | None = None,
         device: str | None = None,
         temperature: float = 1.0,
     ) -> None:
@@ -567,7 +570,7 @@ class SelfCheckNLI:
                 self.model.to(self.device)
                 self.model.eval()
 
-                def _hf_nli(premise: str, hypothesis: str) -> tuple[float, float]:
+                def _hf_logits(premise: str, hypothesis: str) -> List[float]:
                     inputs = self.tokenizer(
                         premise,
                         hypothesis,
@@ -575,34 +578,51 @@ class SelfCheckNLI:
                         truncation=True,
                     ).to(self.device)
                     with torch.no_grad():
-                        logits = self.model(**inputs).logits
-                        if self.temperature != 1.0:
-                            logits = logits / self.temperature
-                    probs = logits.softmax(dim=-1)[0].tolist()
-                    if len(probs) == 3:
-                        p_contra, _p_neutral, p_entail = probs
-                    else:  # pragma: no cover - edge case
-                        p_contra, p_entail = probs[0], probs[-1]
-                    return float(p_contra), float(p_entail)
+                        logits = self.model(**inputs).logits[0]
+                    return logits.tolist()
 
-                self.nli_fn = _hf_nli
+                self.nli_fn = _hf_logits
             except Exception as exc:  # pragma: no cover - optional dependency
                 raise RuntimeError("transformers NLI model unavailable") from exc
         else:
             self.nli_fn = nli_fn
             self.device = device
 
-    def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
+    def predict(
+        self,
+        sentences: Iterable[str],
+        samples: Iterable[str],
+        *,
+        return_logits: bool = False,
+    ) -> List[float] | tuple[List[float], List[List[List[float]]]]:
         sentences = list(sentences)
         samples = list(samples)
         total = len(samples) or 1
         scores: List[float] = []
+        all_logits: List[List[List[float]]] = []
         for sent in sentences:
             agg = 0.0
+            sent_logits: List[List[float]] = []
             for sample in samples:
-                p_contra, p_entail = self.nli_fn(sample, sent)
+                raw_logits = self.nli_fn(sample, sent)
+                import torch  # type: ignore
+
+                logits_t = torch.tensor(raw_logits, dtype=torch.float)
+                if self.temperature != 1.0:
+                    logits_t = logits_t / self.temperature
+                probs = torch.softmax(logits_t, dim=-1).tolist()
+                if len(probs) == 3:
+                    p_contra, _p_neutral, p_entail = probs
+                else:  # pragma: no cover - edge case
+                    p_contra, p_entail = probs[0], probs[-1]
                 agg += max(p_contra, 1 - p_entail)
+                if return_logits:
+                    sent_logits.append(list(raw_logits))
             scores.append(agg / total)
+            if return_logits:
+                all_logits.append(sent_logits)
+        if return_logits:
+            return scores, all_logits
         return scores
 
 
