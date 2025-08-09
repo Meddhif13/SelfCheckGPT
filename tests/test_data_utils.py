@@ -22,3 +22,5 @@ def test_wikibio_dataset_loads(tmp_path):
     except Exception as exc:  # pragma: no cover - network failure
         pytest.skip(f"dataset download failed: {exc}")
     assert len(ds) == 1
+    required = {"gpt3_sentences", "gpt3_text_samples", "annotation"}
+    assert required.issubset(ds.column_names)

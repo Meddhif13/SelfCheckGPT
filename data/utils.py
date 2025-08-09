@@ -7,7 +7,7 @@ from typing import Union
 
 from datasets import Dataset, load_dataset
 
-DATASET_NAME = "hallucinations/wikibio"
+DATASET_NAME = "potsawee/wiki_bio_gpt3_hallucination"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "selfcheckgpt"
 
 
@@ -40,3 +40,12 @@ def _validate_dataset(dataset: Dataset) -> None:
         raise ValueError("Loaded dataset split is empty")
     if not dataset.column_names:
         raise ValueError("Dataset has no columns")
+
+    required_columns = {
+        "gpt3_sentences",
+        "gpt3_text_samples",
+        "annotation",
+    }
+    missing = required_columns.difference(dataset.column_names)
+    if missing:
+        raise ValueError(f"Dataset missing required columns: {sorted(missing)}")
