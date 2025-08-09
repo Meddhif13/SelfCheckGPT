@@ -32,6 +32,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+from sklearn.model_selection import StratifiedKFold
 
 from data.utils import load_wikibio_hallucination
 from sampling.generator import generate_samples, OpenAIChatLLM
@@ -466,6 +467,40 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                 if feature_names:
                     X_train = np.column_stack([train_score_matrix[n] for n in feature_names])
                     y_train = np.array(train_labels)
+
+                    cv_stats = None
+                    if args.cv_folds > 1:
+                        try:
+                            class_counts = np.bincount(y_train)
+                            max_folds = int(class_counts.min())
+                            n_splits = min(args.cv_folds, max_folds)
+                        except ValueError:
+                            n_splits = 0
+                        if n_splits >= 2:
+                            skf = StratifiedKFold(
+                                n_splits=n_splits, shuffle=True, random_state=0
+                            )
+                            fold_stats = []
+                            for tr_idx, val_idx in skf.split(X_train, y_train):
+                                comb_fold = SelfCheckCombiner()
+                                comb_fold.fit(X_train[tr_idx], y_train[tr_idx])
+                                val_scores = comb_fold.predict(X_train[val_idx])
+                                fold_stats.append(
+                                    _compute_stats(
+                                        val_scores, y_train[val_idx], bins=args.calib_bins
+                                    )
+                                )
+                            cv_stats = {
+                                k: sum(fs[k] for fs in fold_stats) / len(fold_stats)
+                                for k in (
+                                    "average_precision",
+                                    "precision",
+                                    "recall",
+                                    "f1",
+                                    "brier",
+                                )
+                            }
+
                     comb = SelfCheckCombiner()
                     comb.fit(X_train, y_train)
                     torch.save(comb._model.state_dict(), temp_dir / "combiner.pt")
@@ -474,16 +509,18 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                     comb_scores = comb.predict(X_test)
                     comb_stats = _compute_stats(comb_scores, test_labels, bins=args.calib_bins)
                     _save_plots("combined", comb_stats, temp_dir)
-                    summary_rows.append(
-                        {
-                            "metric": "combined",
-                            "average_precision": comb_stats["average_precision"],
-                            "precision": comb_stats["precision"],
-                            "recall": comb_stats["recall"],
-                            "f1": comb_stats["f1"],
-                            "brier": comb_stats["brier"],
-                        }
-                    )
+
+                    summary_row = {
+                        "metric": "combined",
+                        "average_precision": comb_stats["average_precision"],
+                        "precision": comb_stats["precision"],
+                        "recall": comb_stats["recall"],
+                        "f1": comb_stats["f1"],
+                        "brier": comb_stats["brier"],
+                    }
+                    if cv_stats is not None:
+                        summary_row.update({f"cv_{k}": v for k, v in cv_stats.items()})
+                    summary_rows.append(summary_row)
                 else:
                     logging.warning("Combiner training skipped: no common metrics")
             except Exception as exc:  # pragma: no cover - optional dependency
@@ -491,8 +528,9 @@ def main() -> None:  # pragma: no cover - exercised via CLI
 
         if summary_rows:
             summary_path = temp_dir / "summary.csv"
+            fieldnames = sorted({k for row in summary_rows for k in row.keys()})
             with summary_path.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(summary_rows)
             logging.info("Wrote results to %s", summary_path)
