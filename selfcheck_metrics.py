@@ -22,6 +22,8 @@ from __future__ import annotations
 from typing import Callable, Iterable, List, Sequence
 import collections
 import math
+import re
+import string
 
 
 def find_optimal_temperature(
@@ -190,6 +192,27 @@ class SelfCheckMQAG:
             self.qg_pipe = None
             self.qa_pipe = None
 
+    @staticmethod
+    def _normalize(text: str) -> list[str]:
+        text = text.lower()
+        text = re.sub(f"[{re.escape(string.punctuation)}]", " ", text)
+        text = re.sub(r"\b(a|an|the)\b", " ", text)
+        return text.split()
+
+    @staticmethod
+    def _f1(pred: str, ref: str) -> float:
+        pred_tokens = SelfCheckMQAG._normalize(pred)
+        ref_tokens = SelfCheckMQAG._normalize(ref)
+        if not pred_tokens or not ref_tokens:
+            return 0.0
+        common = collections.Counter(pred_tokens) & collections.Counter(ref_tokens)
+        num_same = sum(common.values())
+        if num_same == 0:
+            return 0.0
+        precision = num_same / len(pred_tokens)
+        recall = num_same / len(ref_tokens)
+        return 2 * precision * recall / (precision + recall)
+
     def predict(
         self,
         sentences: Iterable[str],
@@ -259,24 +282,21 @@ class SelfCheckMQAG:
             q_ans_stats: List[float] = []
             for q, ref in zip(qs, refs):
                 ref_ans_score = 1.0 if ref else 0.0
-                matches = 0
-                mismatches = 0
+                matches = 0.0
+                mismatches = 0.0
                 soft_match = 0.0
                 soft_mismatch = 0.0
                 answerable = 0
                 for sample in samples:
                     ans = _answer(q, sample)
                     ans_score = 1.0 if ans else 0.0
+                    f1 = self._f1(ans, ref)
                     if ans_score >= answerability_threshold:
                         answerable += 1
-                        if ans == ref and ref:
-                            matches += 1
-                        else:
-                            mismatches += 1
-                    if ans == ref and ref:
-                        soft_match += ans_score
-                    else:
-                        soft_mismatch += ans_score
+                        matches += f1
+                        mismatches += 1 - f1
+                    soft_match += ans_score * f1
+                    soft_mismatch += ans_score * (1 - f1)
                 q_ans_stats.append(answerable / total)
 
                 if scoring_method == "counting":

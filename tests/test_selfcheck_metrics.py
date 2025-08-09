@@ -373,6 +373,26 @@ def test_mqag_bayes_methods():
     assert scores_bayes == scores_alpha
 
 
+def test_mqag_partial_match():
+    def fake_qg(sentence: str) -> list[str]:
+        return ["What does John love?"]
+
+    def fake_qa(question: str, context: str) -> str:
+        if "pepperoni pizza" in context:
+            return "pepperoni pizza"
+        if "pizza" in context:
+            return "pizza"
+        return ""
+
+    metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
+    sents = ["John loves pepperoni pizza"]
+    samples = ["John loves pepperoni pizza", "John loves pizza"]
+    scores, _ = metric.predict(sents, samples)
+    f1 = metric._f1("pizza", "pepperoni pizza")
+    expected = (2 - (1 + f1)) / 2
+    assert math.isclose(scores[0], expected)
+
+
 def test_prompt_mapping_yes_no():
     def fake_ask(context: str, sentence: str) -> str:
         return "Yes" if "earth" in context else "No"
