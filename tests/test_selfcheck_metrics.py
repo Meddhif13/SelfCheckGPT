@@ -90,17 +90,17 @@ def test_ngram_document_aggregates():
 
 
 def test_nli_entailment_and_contradiction():
-    def fake_nli(premise: str, hypothesis: str) -> tuple[float, float]:
+    def fake_nli(premise: str, hypothesis: str) -> list[float]:
         if "France" in premise and "France" in hypothesis:
-            return 0.01, 0.95  # entailed
-        return 0.9, 0.05  # contradiction
+            return [0.0, 0.0, 2.0]  # entailed
+        return [2.0, 0.0, 0.0]  # contradiction
 
     metric = SelfCheckNLI(nli_fn=fake_nli)
     sents = ["Paris is in France.", "Paris is in Spain."]
     samples = ["Paris is in France. It is a city."]
     scores = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 0.05)
-    assert math.isclose(scores[1], 0.95)
+    assert scores[0] < 0.5
+    assert scores[1] > 0.5
 
 
 def test_nli_allows_model_and_device(monkeypatch):
@@ -230,6 +230,32 @@ def test_find_optimal_temperature():
     )
 
     assert t > 0
+    assert calibrated <= base
+
+
+def test_temperature_calibration_reduces_cross_entropy():
+    import torch
+    from selfcheck_metrics import SelfCheckNLI, find_optimal_temperature
+
+    def fake_nli(premise: str, hypothesis: str) -> list[float]:
+        if "accurate" in hypothesis:
+            return [0.2, 0.0, 0.0]
+        return [0.0, 0.0, 0.2]
+
+    metric = SelfCheckNLI(nli_fn=fake_nli)
+    sentences = ["accurate", "inaccurate"]
+    samples = ["ctx"]
+    _, per_sent_logits = metric.predict(sentences, samples, return_logits=True)
+    flat_logits = [per_sent_logits[0][0], per_sent_logits[1][0]]
+    labels = [0, 2]
+
+    t = find_optimal_temperature(flat_logits, labels)
+    base = torch.nn.functional.cross_entropy(
+        torch.tensor(flat_logits), torch.tensor(labels)
+    )
+    calibrated = torch.nn.functional.cross_entropy(
+        torch.tensor(flat_logits) / t, torch.tensor(labels)
+    )
     assert calibrated <= base
 
 
