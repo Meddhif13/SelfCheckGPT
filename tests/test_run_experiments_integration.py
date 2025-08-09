@@ -17,7 +17,10 @@ def test_run_experiments_tiny(tmp_path, monkeypatch):
         }
     )
 
+    seen_splits = []
+
     def fake_loader(split="test"):
+        seen_splits.append(split)
         return ds
 
     monkeypatch.setattr(run_experiments, "load_wikibio_hallucination", fake_loader)
@@ -34,6 +37,12 @@ def test_run_experiments_tiny(tmp_path, monkeypatch):
             "1",
             "--output-dir",
             str(out_dir),
+            "--train-split",
+            "train[:1]",
+            "--val-split",
+            "validation[:1]",
+            "--test-split",
+            "test[:1]",
         ],
     )
     run_experiments.main()
@@ -42,8 +51,10 @@ def test_run_experiments_tiny(tmp_path, monkeypatch):
     assert summary.exists()
     assert (out_dir / "ngram_pr.png").exists()
     assert (out_dir / "ngram_calibration.png").exists()
+    assert (out_dir / "combiner.pt").exists()
     content = summary.read_text()
     assert "ngram" in content
+    assert seen_splits == ["train[:1]", "validation[:1]", "test[:1]"]
 
 
 def test_run_experiments_temperature_sweep(tmp_path, monkeypatch):
@@ -229,7 +240,7 @@ def test_run_experiments_paper_config(tmp_path, monkeypatch):
     }
 
 
-def test_run_experiments_combiner_cv(tmp_path, monkeypatch):
+def test_run_experiments_combiner(tmp_path, monkeypatch):
     # create dataset with 10 examples and alternating labels
     sentences = [[f"S{i}"] for i in range(10)]
     samples = [[f"S{i}"] for i in range(10)]
@@ -267,6 +278,10 @@ def test_run_experiments_combiner_cv(tmp_path, monkeypatch):
             "10",
             "--output-dir",
             str(out_dir),
+            "--train-split",
+            "train",
+            "--test-split",
+            "test",
         ],
     )
 

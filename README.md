@@ -49,12 +49,12 @@ optionally change the number of evaluated examples with ``--limit``:
 python run_experiments.py --metrics ngram mqag nli --limit 25
 ```
 
-Use ``--split`` to select dataset partitions.  Passing ``all`` evaluates
-the train, validation and test splits sequentially, storing results for
-each split in a separate subdirectory inside ``--output-dir``:
+Use ``--train-split``, ``--val-split`` and ``--test-split`` to select dataset
+partitions for training the combiner, optional validation, and final
+evaluation.  Splits accept the usual Hugging Face slicing syntax:
 
 ```bash
-python run_experiments.py --split all --metrics all --sample-count 20
+python run_experiments.py --train-split train[:1000] --val-split validation[:200] --test-split test --metrics all --sample-count 20
 ```
 
 The ``--sample-count`` flag controls how many sampled passages per
@@ -64,11 +64,10 @@ pre‑computed samples in the dataset are truncated to the requested count.
 By default the script now follows the paper and uses 20 samples per
 prompt.
 
-The logistic‑regression combiner can optionally be evaluated with
-stratified ``k``‑fold cross‑validation via ``--cv-folds`` (default: 5).
-To mirror the exact settings from the paper, pass ``--paper-config``
-which enables resampling, sets ``--sample-count`` to 20 and applies the
-original top‑k/top‑p cut‑offs.
+The logistic‑regression combiner is trained on the specified training
+split and evaluated on the test split.  To mirror the exact settings
+from the paper, pass ``--paper-config`` which enables resampling, sets
+``--sample-count`` to 20 and applies the original top‑k/top‑p cut‑offs.
 
 Every run writes a ``summary.csv`` file and generates precision/recall
 and calibration plots for each metric, reproducing the statistics
