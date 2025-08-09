@@ -535,9 +535,9 @@ class SelfCheckNLI:
     ``microsoft/deberta-v3-large-mnli`` model to obtain Natural Language
     Inference probabilities.  A different model name can be supplied.  For
     each pair of ``(sample, sentence)`` it computes the probability of
-    contradiction and entailment and derives an inconsistency score
-    ``max(p_contra, 1 - p_entail)``.  Higher scores therefore indicate that
-    the sentence is not supported by the sampled passages.
+    *contradiction* and uses this value directly as the inconsistency score.
+    Higher scores therefore indicate that the sentence is not supported by
+    the sampled passages.
 
     A custom ``nli_fn`` can be supplied for testing which should accept a
     premise and hypothesis and return raw logits for the NLI labels.  The
@@ -611,11 +611,11 @@ class SelfCheckNLI:
                 if self.temperature != 1.0:
                     logits_t = logits_t / self.temperature
                 probs = torch.softmax(logits_t, dim=-1).tolist()
-                if len(probs) == 3:
-                    p_contra, _p_neutral, p_entail = probs
+                if len(probs) >= 1:
+                    p_contra = probs[0]
                 else:  # pragma: no cover - edge case
-                    p_contra, p_entail = probs[0], probs[-1]
-                agg += max(p_contra, 1 - p_entail)
+                    p_contra = 0.0
+                agg += p_contra
                 if return_logits:
                     sent_logits.append(list(raw_logits))
             scores.append(agg / total)
