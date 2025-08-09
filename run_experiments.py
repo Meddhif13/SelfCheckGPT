@@ -174,13 +174,22 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         help="Which metrics to evaluate (or 'all').",
     )
     parser.add_argument(
-        "--split",
-        nargs="+",
-        default=["test"],
-        help=(
-            "Dataset split(s) or slices to load, e.g. 'test[:100]'."
-            " Use 'all' to evaluate train, validation and test."
-        ),
+        "--train-split",
+        type=str,
+        default="train",
+        help="Dataset split or slice for training the combiner.",
+    )
+    parser.add_argument(
+        "--val-split",
+        type=str,
+        default="validation",
+        help="Optional dataset split or slice for validation/hyperparameters.",
+    )
+    parser.add_argument(
+        "--test-split",
+        type=str,
+        default="test",
+        help="Dataset split or slice for final evaluation.",
     )
     parser.add_argument(
         "--limit",
@@ -295,10 +304,6 @@ def main() -> None:  # pragma: no cover - exercised via CLI
     if args.resample or "prompt" in metric_names:
         llm = OpenAIChatLLM(model=args.llm_model)
 
-    split_names = args.split
-    if "all" in split_names:
-        split_names = ["train", "validation", "test"]
-
     base_out = Path(args.output_dir)
     base_out.mkdir(parents=True, exist_ok=True)
 
@@ -315,20 +320,15 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         temp_dir = base_out / f"temp_{str(temp).replace('.', '_')}" if len(temps) > 1 else base_out
         temp_dir.mkdir(parents=True, exist_ok=True)
 
-        for split in split_names:
-            logging.info("Loading dataset split '%s' ...", split)
-            ds = load_wikibio_hallucination(split=split)
-
-            examples = list(ds)
+        def prepare_split(examples: List[dict], name: str) -> List[dict]:
             if args.limit is not None:
                 examples = examples[: args.limit]
-
             if args.resample or not all("gpt3_text_samples" in ex for ex in examples):
-                logging.info("Generating samples with LLM ...")
+                logging.info("Generating samples with LLM for %s split...", name)
                 prompts = [" ".join(ex["gpt3_sentences"]) for ex in examples]
-                out_dir = temp_dir / split if len(split_names) > 1 else temp_dir
-                out_dir.mkdir(parents=True, exist_ok=True)
-                sample_file = out_dir / "samples.jsonl"
+                split_dir = temp_dir / name
+                split_dir.mkdir(parents=True, exist_ok=True)
+                sample_file = split_dir / "samples.jsonl"
                 generate_samples(
                     llm,
                     prompts,
@@ -350,139 +350,130 @@ def main() -> None:  # pragma: no cover - exercised via CLI
             else:
                 for ex in examples:
                     ex["gpt3_text_samples"] = ex.get("gpt3_text_samples", [])[: args.sample_count]
+            return examples
 
-            nli_temperature = 1.0
-            if "nli" in metric_names and len(examples) > 1:
-                val_count = max(1, int(0.1 * len(examples)))
-                val_examples = examples[:val_count]
-                examples = examples[val_count:]
-                if not examples:
-                    examples, val_examples = val_examples[-1:], val_examples[:-1]
-                try:
-                    metric_cal = SelfCheckNLI()
-                    calib_logits: list[list[float]] = []
-                    calib_labels: list[int] = []
-                    for ex in val_examples:
-                        _, per_sent_logits = metric_cal.predict(
-                            ex["gpt3_sentences"],
-                            ex["gpt3_text_samples"],
-                            return_logits=True,
-                        )
-                        labels = load_annotations(ex)
-                        for lbl, sent_logits in zip(labels, per_sent_logits):
-                            for logit in sent_logits:
-                                calib_logits.append(logit)
-                                calib_labels.append(lbl)
-                    nli_temperature = find_optimal_temperature(
-                        calib_logits, calib_labels
+        # Load and prepare datasets
+        logging.info("Loading dataset split '%s' for training ...", args.train_split)
+        train_ds = load_wikibio_hallucination(split=args.train_split)
+        train_examples = prepare_split(list(train_ds), "train")
+
+        val_examples: List[dict] = []
+        if args.val_split:
+            logging.info("Loading dataset split '%s' for validation ...", args.val_split)
+            val_ds = load_wikibio_hallucination(split=args.val_split)
+            val_examples = prepare_split(list(val_ds), "val")
+
+        logging.info("Loading dataset split '%s' for testing ...", args.test_split)
+        test_ds = load_wikibio_hallucination(split=args.test_split)
+        test_examples = prepare_split(list(test_ds), "test")
+
+        nli_temperature = 1.0
+        if "nli" in metric_names and val_examples:
+            try:
+                metric_cal = SelfCheckNLI()
+                calib_logits: list[list[float]] = []
+                calib_labels: list[int] = []
+                for ex in val_examples:
+                    _, per_sent_logits = metric_cal.predict(
+                        ex["gpt3_sentences"],
+                        ex["gpt3_text_samples"],
+                        return_logits=True,
                     )
-                except Exception as exc:  # pragma: no cover - optional dependency
-                    logging.warning("NLI temperature calibration failed: %s", exc)
+                    labels = load_annotations(ex)
+                    for lbl, sent_logits in zip(labels, per_sent_logits):
+                        for logit in sent_logits:
+                            calib_logits.append(logit)
+                            calib_labels.append(lbl)
+                nli_temperature = find_optimal_temperature(calib_logits, calib_labels)
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logging.warning("NLI temperature calibration failed: %s", exc)
 
-            out_dir = temp_dir / split if len(split_names) > 1 else temp_dir
-            out_dir.mkdir(parents=True, exist_ok=True)
+        def get_metric(name: str):
+            if name == "ngram":
+                return SelfCheckNgram(n=args.ngram_n)
+            if name == "prompt":
+                return SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
+            if name == "nli":
+                return SelfCheckNLI(temperature=nli_temperature)
+            return METRICS[name]()
 
-            summary_rows: List[dict[str, float | str]] = []
-            score_matrix: dict[str, List[float]] = {}
-            all_labels: List[int] | None = None
-            for name in metric_names:
-                if name not in METRICS:
-                    logging.warning("Unknown metric '%s' -- skipping", name)
-                    continue
-                try:
-                    if name == "ngram":
-                        metric = SelfCheckNgram(n=args.ngram_n)
-                    elif name == "prompt":
-                        metric = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
-                    elif name == "nli":
-                        metric = SelfCheckNLI(temperature=nli_temperature)
-                    else:
-                        metric = METRICS[name]()
-                    stats, scores, labels = evaluate(
-                        metric, examples, bins=args.calib_bins, return_scores=True
-                    )
-                except Exception as exc:  # pragma: no cover - optional dependencies
-                    logging.warning("Metric %s failed: %s", name, exc)
-                    continue
-
-                if all_labels is None:
-                    all_labels = labels
-                score_matrix[name] = scores
-
-                _save_plots(name, stats, out_dir)
-                summary_rows.append(
-                    {
-                        "metric": name,
-                        "average_precision": stats["average_precision"],
-                        "precision": stats["precision"],
-                        "recall": stats["recall"],
-                        "f1": stats["f1"],
-                        "brier": stats["brier"],
-                    }
+        # Evaluate metrics on training data for combiner fitting
+        train_score_matrix: dict[str, List[float]] = {}
+        train_labels: List[int] | None = None
+        for name in metric_names:
+            if name not in METRICS:
+                logging.warning("Unknown metric '%s' -- skipping", name)
+                continue
+            try:
+                metric = get_metric(name)
+                _, scores, labels = evaluate(
+                    metric, train_examples, bins=args.calib_bins, return_scores=True
                 )
+            except Exception as exc:  # pragma: no cover - optional dependencies
+                logging.warning("Metric %s failed: %s", name, exc)
+                continue
+            if train_labels is None:
+                train_labels = labels
+            train_score_matrix[name] = scores
 
-            # Train and evaluate combiner if we have metric scores
-            if score_matrix and all_labels is not None:
-                try:
-                    import numpy as np
-                    from sklearn.model_selection import StratifiedKFold
-                    from selfcheck_combiner import SelfCheckCombiner
+        # Evaluate metrics on test data
+        summary_rows: List[dict[str, float | str]] = []
+        test_score_matrix: dict[str, List[float]] = {}
+        test_labels: List[int] | None = None
+        for name in metric_names:
+            if name not in METRICS:
+                continue
+            if name not in train_score_matrix:
+                # skip metrics that failed on training data
+                logging.warning("Skipping metric '%s' due to missing training scores", name)
+                continue
+            try:
+                metric = get_metric(name)
+                stats, scores, labels = evaluate(
+                    metric, test_examples, bins=args.calib_bins, return_scores=True
+                )
+            except Exception as exc:  # pragma: no cover - optional dependencies
+                logging.warning("Metric %s failed on test data: %s", name, exc)
+                continue
+            if test_labels is None:
+                test_labels = labels
+            test_score_matrix[name] = scores
+            _save_plots(name, stats, temp_dir)
+            summary_rows.append(
+                {
+                    "metric": name,
+                    "average_precision": stats["average_precision"],
+                    "precision": stats["precision"],
+                    "recall": stats["recall"],
+                    "f1": stats["f1"],
+                    "brier": stats["brier"],
+                }
+            )
 
-                    # Create feature matrix with shape (num_samples, num_metrics)
-                    feature_names = [n for n in metric_names if n in score_matrix]
-                    features = np.column_stack([score_matrix[n] for n in feature_names])
-                    labels_arr = np.array(all_labels)
+        # Train combiner on train split and evaluate on test split
+        if (
+            train_score_matrix
+            and test_score_matrix
+            and train_labels is not None
+            and test_labels is not None
+        ):
+            try:
+                import numpy as np
+                import torch
+                from selfcheck_combiner import SelfCheckCombiner
 
-                    comb_stats = None
-                    if args.cv_folds and args.cv_folds > 1:
-                        unique, counts = np.unique(labels_arr, return_counts=True)
-                        min_class = counts.min()
-                        n_splits = min(args.cv_folds, min_class)
-                        if n_splits > 1:
-                            skf = StratifiedKFold(
-                                n_splits=n_splits, shuffle=True, random_state=0
-                            )
-                            cv_scores: list[float] = []
-                            cv_labels: list[int] = []
-                            for train_idx, test_idx in skf.split(features, labels_arr):
-                                comb = SelfCheckCombiner()
-                                comb.fit(features[train_idx], labels_arr[train_idx])
-                                cv_scores.extend(comb.predict(features[test_idx]))
-                                cv_labels.extend(labels_arr[test_idx].tolist())
-                            comb_stats = _compute_stats(
-                                cv_scores, cv_labels, bins=args.calib_bins
-                            )
-                        else:
-                            logging.warning(
-                                "Not enough samples per class for %d-fold CV; using hold-out split",
-                                args.cv_folds,
-                            )
+                feature_names = [n for n in metric_names if n in train_score_matrix and n in test_score_matrix]
+                if feature_names:
+                    X_train = np.column_stack([train_score_matrix[n] for n in feature_names])
+                    y_train = np.array(train_labels)
+                    comb = SelfCheckCombiner()
+                    comb.fit(X_train, y_train)
+                    torch.save(comb._model.state_dict(), temp_dir / "combiner.pt")
 
-                    if comb_stats is None:
-                        rng = np.random.default_rng(0)
-                        indices = np.arange(len(labels_arr))
-                        rng.shuffle(indices)
-                        n = len(indices)
-                        train_end = max(1, int(0.6 * n))
-                        val_end = (
-                            max(train_end + 1, int(0.8 * n))
-                            if n - train_end > 1
-                            else train_end
-                        )
-                        test_idx = indices[val_end:]
-                        if len(test_idx) == 0:
-                            test_idx = indices[-1:]
-                        train_idx = indices[:train_end]
-
-                        comb = SelfCheckCombiner()
-                        comb.fit(features[train_idx], labels_arr[train_idx])
-                        test_scores = comb.predict(features[test_idx])
-                        test_labels = labels_arr[test_idx].tolist()
-                        comb_stats = _compute_stats(
-                            test_scores, test_labels, bins=args.calib_bins
-                        )
-
-                    _save_plots("combined", comb_stats, out_dir)
+                    X_test = np.column_stack([test_score_matrix[n] for n in feature_names])
+                    comb_scores = comb.predict(X_test)
+                    comb_stats = _compute_stats(comb_scores, test_labels, bins=args.calib_bins)
+                    _save_plots("combined", comb_stats, temp_dir)
                     summary_rows.append(
                         {
                             "metric": "combined",
@@ -493,16 +484,18 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                             "brier": comb_stats["brier"],
                         }
                     )
-                except Exception as exc:  # pragma: no cover - optional dependency
-                    logging.warning("Combiner failed: %s", exc)
+                else:
+                    logging.warning("Combiner training skipped: no common metrics")
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logging.warning("Combiner failed: %s", exc)
 
-            if summary_rows:
-                summary_path = out_dir / "summary.csv"
-                with summary_path.open("w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
-                    writer.writeheader()
-                    writer.writerows(summary_rows)
-                logging.info("Wrote results to %s", summary_path)
+        if summary_rows:
+            summary_path = temp_dir / "summary.csv"
+            with summary_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
+                writer.writeheader()
+                writer.writerows(summary_rows)
+            logging.info("Wrote results to %s", summary_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
