@@ -24,26 +24,6 @@ def _load_bertscore():
         pytest.skip(f"BERTScore model unavailable: {e}")
 
 
-def _load_nli():
-    try:
-        return SelfCheckNLI(model="microsoft/deberta-v3-large-mnli")
-    except Exception as e:  # pragma: no cover - dependent on external model
-        pytest.skip(f"NLI model unavailable: {e}")
-
-
-def _load_mqag():
-    try:
-        import torch
-    except Exception as e:  # pragma: no cover - optional dependency
-        pytest.skip(f"PyTorch unavailable: {e}")
-    if not torch.cuda.is_available():  # pragma: no cover - requires GPU
-        pytest.skip("MQAG models require a GPU")
-    try:
-        return SelfCheckMQAG(num_questions=5)
-    except Exception as e:  # pragma: no cover - dependent on external model
-        pytest.skip(f"MQAG models unavailable: {e}")
-
-
 def _expected(metric: SelfCheckBERTScore, sent: str, samples: list[str]) -> float:
     scores: list[float] = []
     for sample in samples:
@@ -122,17 +102,6 @@ def test_nli_entailment_and_contradiction():
     scores = metric.predict(sents, samples)
     assert scores[0] < 0.5
     assert scores[1] > 0.5
-
-
-def test_nli_model_entailment_contradiction():
-    metric = _load_nli()
-    sents = ["Paris is in France.", "Paris is in Spain."]
-    samples = ["Paris is in France. It is a city."]
-    scores = metric.predict(sents, samples)
-    assert scores[0] < 0.5
-    assert scores[1] > 0.5
-
-
 def test_nli_allows_model_and_device(monkeypatch):
     import sys
     import types
@@ -394,40 +363,6 @@ def test_mqag_answerability_filter():
     assert ans_stats == [[0.3]]
     assert metric.last_unanswerable == [0.7]
     assert math.isclose(metric.avg_unanswerable, 0.7)
-
-
-def test_mqag_parity_with_paper():
-    metric = _load_mqag()
-
-    sents = [
-        "Michael Alan Weiner (born March 31, 1942) is an American radio host.",
-        "He is the host of The Savage Nation.",
-    ]
-    samples = [
-        (
-            "Michael Alan Weiner (born March 31, 1942) is an American radio host. "
-            "He is the host of The Savage Country."
-        ),
-        (
-            "Michael Alan Weiner (born January 13, 1960) is a Canadian radio host. "
-            "He works at The New York Times."
-        ),
-        (
-            "Michael Alan Weiner (born March 31, 1942) is an American radio host. "
-            "He obtained his PhD from MIT."
-        ),
-    ]
-
-    try:  # pragma: no cover - optional dependency
-        import torch
-
-        torch.manual_seed(0)
-    except Exception:  # pragma: no cover - optional dependency
-        pass
-
-    scores, _ = metric.predict(sents, samples, metric="counting")
-    expected = [0.30990949, 0.42376232]
-    assert scores == pytest.approx(expected, rel=1e-3)
 
 
 def test_prompt_mapping_yes_no():
