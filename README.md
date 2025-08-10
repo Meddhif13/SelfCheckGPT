@@ -60,6 +60,27 @@ python -m spacy download en_core_web_sm
 python -c "from data.utils import load_wikibio_hallucination; load_wikibio_hallucination(split='train[:1]')"
 ```
 
+## GPU setup (RTX 4060)
+
+Running the heavier metrics on GPU requires a recent NVIDIA driver and a
+CUDA‑enabled PyTorch build.  An RTX 4060 supports CUDA 12, which in turn needs
+driver version 535 or newer.  The repository ships a helper script that
+installs the CUDA 12.1 toolkit, PyTorch with matching CUDA wheels and downloads
+all Hugging Face weights used by BERTScore, MQAG and NLI:
+
+```bash
+bash scripts/setup_gpu_env.sh
+```
+
+The script fetches the following models in advance so that the first run does
+not need to contact Hugging Face:
+
+- `roberta-large` for BERTScore
+- `potsawee/t5-base-squad-qg`, `potsawee/t5-base-distractor-generation`,
+  `potsawee/longformer-large-4096-mc-squad2` and
+  `potsawee/longformer-large-4096-answerable-squad2` for MQAG
+- `microsoft/deberta-v3-large-mnli` for NLI
+
 ## Running experiments
 
 By default the script evaluates the n‑gram metric on fifty examples:
@@ -99,6 +120,17 @@ Every run writes a ``summary.csv`` file and generates precision/recall
 and calibration plots for each metric, reproducing the statistics
 reported in the paper (precision, recall, F1, average precision, Brier
 score and calibration curves).
+
+To mirror the paper exactly with GPU‑accelerated metrics run:
+
+```bash
+python run_experiments.py --metrics ngram bertscore mqag nli --paper-config
+```
+
+Results are placed in the directory given by ``--output-dir`` (``results`` by
+default).  It will contain ``summary.csv``, per‑metric ``*_pr.png`` and
+``*_calibration.png`` plots and, when multiple metrics are combined, the trained
+logistic‑regression weights in ``combiner.pt``.
 
 ## LLM configuration
 
