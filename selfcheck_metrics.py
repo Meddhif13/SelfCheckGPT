@@ -750,12 +750,16 @@ class SelfCheckPrompt:
         hf_model: str | None = None,
         hf_device: int | str | None = None,
         hf_max_new_tokens: int = 16,
+        normalize: bool = True,
+        temperature: float = 1.0,
     ) -> None:
         self.model = model
         self.max_retries = max_retries
         self.retry_wait = retry_wait
         self.prompt_template = prompt_template or self._DEFAULT_TEMPLATE
         self.map_fn = map_fn or self._default_map
+        self.normalize = normalize
+        self.temperature = temperature
         self._client = None
         self._hf_pipe = None
         self._hf_max_new_tokens = hf_max_new_tokens
@@ -844,16 +848,63 @@ class SelfCheckPrompt:
             return 1.0
         return 0.5
 
+    # -- normalisation ------------------------------------------------------
+    @staticmethod
+    def _normalise(ans: str) -> str:
+        ans = ans.strip().lower()
+        ans = ans.translate(str.maketrans("", "", string.punctuation))
+        mapping = {
+            "y": "yes",
+            "yes": "yes",
+            "yeah": "yes",
+            "yep": "yes",
+            "affirmative": "yes",
+            "sure": "yes",
+            "true": "yes",
+            "correct": "yes",
+            "n": "no",
+            "no": "no",
+            "nope": "no",
+            "nah": "no",
+            "negative": "no",
+            "false": "no",
+            "incorrect": "no",
+        }
+        return mapping.get(ans, ans)
+
     # -- prediction ----------------------------------------------------------
-    def predict(self, sentences: Iterable[str], samples: Iterable[str]) -> List[float]:
+    def predict(
+        self,
+        sentences: Iterable[str],
+        samples: Iterable[str],
+        *,
+        return_probs: bool = False,
+    ) -> List[float] | tuple[List[float], List[List[float]]]:
         samples = list(samples)
         scores: List[float] = []
+        all_probs: List[List[float]] = []
         for sent in sentences:
             total = 0.0
+            sent_probs: List[float] = []
             for sample in samples:
                 ans = self.ask_fn(sample, sent)
-                total += self.map_fn(ans)
-            scores.append(total / max(1, len(samples)))
+                if self.normalize:
+                    ans = self._normalise(ans)
+                prob = self.map_fn(ans)
+                if self.temperature != 1.0:
+                    p = min(max(prob, 1e-8), 1 - 1e-8)
+                    logit = math.log(p / (1 - p))
+                    p = 1 / (1 + math.exp(-logit / self.temperature))
+                    prob = p
+                total += prob
+                if return_probs:
+                    sent_probs.append(prob)
+            avg = total / max(1, len(samples))
+            scores.append(avg)
+            if return_probs:
+                all_probs.append(sent_probs)
+        if return_probs:
+            return scores, all_probs
         return scores
 
 

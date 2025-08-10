@@ -10,6 +10,7 @@ from selfcheck_metrics import (
     SelfCheckNgram,
     SelfCheckNLI,
     SelfCheckPrompt,
+    find_optimal_temperature,
 )
 
 
@@ -547,3 +548,46 @@ def test_prompt_hf_backend(monkeypatch):
     score = metric.predict(["s"], ["c"])[0]
     assert score == 0.0  # 'Yes' maps to 0.0 by default
     assert pipe.last_prompt == "C:c|S:s"
+
+
+def test_prompt_response_normalisation():
+    def fake_ask(context: str, sentence: str) -> str:
+        return context
+
+    metric = SelfCheckPrompt(ask_fn=fake_ask)
+    sents = ["x"]
+    samples = ["YES!!!", "no??", "Affirmative", "Nope."]
+    scores, probs = metric.predict(sents, samples, return_probs=True)
+    assert scores[0] == 0.5
+    assert probs[0] == [0.0, 1.0, 0.0, 1.0]
+
+
+def test_prompt_temperature_calibration_reduces_cross_entropy():
+    def fake_ask(context: str, sentence: str) -> str:
+        return context
+
+    mapping = {"yes": 0.9, "no": 0.2}
+
+    metric = SelfCheckPrompt(ask_fn=fake_ask, map_fn=lambda a: mapping[a])
+    _, probs1 = metric.predict(["s1"], ["yes"], return_probs=True)
+    _, probs2 = metric.predict(["s2"], ["no"], return_probs=True)
+    flat_probs = [probs1[0][0], probs2[0][0]]
+    labels = [1, 0]  # first hallucination, second factual
+    logits = [[math.log(p / (1 - p)), 0.0] for p in flat_probs]
+    adj_labels = [1 - l for l in labels]
+    t = find_optimal_temperature(logits, adj_labels)
+
+    def ce(ps):
+        return sum(
+            -lbl * math.log(p) - (1 - lbl) * math.log(1 - p)
+            for p, lbl in zip(ps, labels)
+        )
+
+    base = ce(flat_probs)
+    metric_cal = SelfCheckPrompt(
+        ask_fn=fake_ask, map_fn=lambda a: mapping[a], temperature=t
+    )
+    score1 = metric_cal.predict(["s1"], ["yes"])[0]
+    score2 = metric_cal.predict(["s2"], ["no"])[0]
+    calibrated = ce([score1, score2])
+    assert calibrated <= base

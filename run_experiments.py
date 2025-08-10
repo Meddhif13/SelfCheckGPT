@@ -369,6 +369,7 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         test_examples = prepare_split(list(test_ds), "test")
 
         nli_temperature = 1.0
+        prompt_temperature = 1.0
         if "nli" in metric_names and val_examples:
             try:
                 metric_cal = SelfCheckNLI()
@@ -389,11 +390,39 @@ def main() -> None:  # pragma: no cover - exercised via CLI
             except Exception as exc:  # pragma: no cover - optional dependency
                 logging.warning("NLI temperature calibration failed: %s", exc)
 
+        if "prompt" in metric_names and val_examples:
+            try:
+                metric_cal = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
+                calib_probs: list[float] = []
+                calib_labels: list[int] = []
+                for ex in val_examples:
+                    _, per_sent_probs = metric_cal.predict(
+                        ex["gpt3_sentences"],
+                        ex["gpt3_text_samples"],
+                        return_probs=True,
+                    )
+                    labels = load_annotations(ex)
+                    for lbl, sent_probs in zip(labels, per_sent_probs):
+                        for prob in sent_probs:
+                            p = min(max(prob, 1e-8), 1 - 1e-8)
+                            logit = math.log(p / (1 - p))
+                            calib_probs.append(logit)
+                            calib_labels.append(1 - lbl)
+                calib_logits = [[p, 0.0] for p in calib_probs]
+                prompt_temperature = find_optimal_temperature(
+                    calib_logits, calib_labels
+                )
+            except Exception as exc:  # pragma: no cover - optional dependency
+                logging.warning("Prompt temperature calibration failed: %s", exc)
+
         def get_metric(name: str):
             if name == "ngram":
                 return SelfCheckNgram(n=args.ngram_n)
             if name == "prompt":
-                return SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
+                return SelfCheckPrompt(
+                    ask_fn=llm.ask_yes_no if llm else None,
+                    temperature=prompt_temperature,
+                )
             if name == "nli":
                 return SelfCheckNLI(temperature=nli_temperature)
             return METRICS[name]()
