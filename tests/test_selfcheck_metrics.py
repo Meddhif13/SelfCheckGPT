@@ -365,7 +365,7 @@ def test_mqag_probability_distance():
         sents, samples, metric="counting", disagreement_threshold=0.5
     )
     assert math.isclose(scores[0], 0.5)
-    assert ans_stats == [[1.0]]
+    assert ans_stats == [[0.9]]
     assert metric.last_answerability == ans_stats
     assert metric.last_disagreement == scores
 
@@ -391,9 +391,9 @@ def test_mqag_answerability_filter():
         sents, samples, metric="counting", disagreement_threshold=0.5
     )
     assert math.isclose(scores[0], 0.5)
-    assert ans_stats == [[0.0]]
-    assert metric.last_unanswerable == [1.0]
-    assert math.isclose(metric.avg_unanswerable, 1.0)
+    assert ans_stats == [[0.3]]
+    assert metric.last_unanswerable == [0.7]
+    assert math.isclose(metric.avg_unanswerable, 0.7)
 
 
 def test_mqag_parity_with_paper():

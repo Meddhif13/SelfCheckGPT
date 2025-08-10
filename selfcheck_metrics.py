@@ -185,10 +185,29 @@ class SelfCheckMQAG:
     and answering and allows explicitly setting the device for each
     pipeline.  By default it uses a T5-based QG model and a DistilBERT QA
     model.  Multiple questions are generated for each sentence which are
-    individually answered on the samples.  Scores and unanswerable ratios
-    are averaged over these questions and exposed via ``last_disagreement``
-    and ``last_unanswerable``.  The attributes ``avg_disagreement`` and
-    ``avg_unanswerable`` summarize these statistics over all sentences.
+    individually answered on the samples.  Scores and answerability
+    ratios are averaged over these questions and exposed via
+    ``last_disagreement`` and ``last_answerability``.  The attributes
+    ``avg_disagreement`` and ``avg_answerability`` summarize these
+    statistics over all sentences.
+
+    Parameters
+    ----------
+    qg_fn, qa_fn: callable, optional
+        Custom question generation / answering functions.  When omitted
+        the class loads real ``transformers`` models specified via the
+        ``g1_model``, ``g2_model``, ``qa_model`` and ``answer_model``
+        parameters.
+    batch_size: int, optional
+        Number of samples processed together by the generation models.
+    num_questions: int, optional
+        How many questions to sample per sentence (default 3).
+    g1_model, g2_model, qa_model, answer_model: str, optional
+        HuggingFace model identifiers for the first and second question
+        generator, the multiple‑choice answerer and the answerability
+        classifier.
+    device: int | str | None, optional
+        Device string or CUDA device id used for all models.
     """
 
     def __init__(
@@ -377,6 +396,22 @@ class SelfCheckMQAG:
                 probs = torch.softmax(logits, dim=-1)
                 return probs.tolist()
 
+            def _answerable_prob(q: dict, ctx: str, _probs: Sequence[float] | None = None) -> float:
+                if torch is None:  # pragma: no cover - optional dependency
+                    raise RuntimeError("PyTorch is required for MQAG")
+                tokenized = self.ans_tokenizer(
+                    q["question"],
+                    ctx,
+                    return_tensors="pt",
+                    padding="longest",
+                    truncation=True,
+                )
+                if self.device is not None:
+                    tokenized = tokenized.to(self.device)
+                logits = self.ans_model(**tokenized).logits[0]
+                probs = torch.softmax(logits, dim=-1)
+                return float(probs[1]) if probs.numel() >= 2 else 0.0
+
         else:
             def _gen_questions(text: str) -> List[dict]:
                 q_res = self.qg_fn(text)
@@ -384,6 +419,13 @@ class SelfCheckMQAG:
 
             def _answer_probs(q: dict, ctx: str) -> Sequence[float]:
                 return self.qa_fn(q["question"], q["options"], ctx)
+
+            def _answerable_prob(
+                q: dict, ctx: str, probs: Sequence[float] | None = None
+            ) -> float:
+                if probs is None:
+                    probs = _answer_probs(q, ctx)
+                return max(probs) if probs else 0.0
 
         all_questions = [_gen_questions(s) for s in sentences]
 
@@ -399,20 +441,22 @@ class SelfCheckMQAG:
             q_ans_stats: List[float] = []
             for q, ref_prob in zip(qs, refs):
                 disagreements = 0.0
-                answerable = 0
+                considered = 0
+                ans_scores: List[float] = []
                 for sample in samples:
                     probs = _answer_probs(q, sample)
-                    ans_score = max(probs) if probs else 0.0
+                    ans_score = _answerable_prob(q, sample, probs)
+                    ans_scores.append(ans_score)
                     if ans_score >= answerability_threshold:
-                        answerable += 1
+                        considered += 1
                         distances = get_prob_distances(ref_prob, probs)
                         if distances[metric] > disagreement_threshold:
                             disagreements += 1
-                q_ans_stats.append(answerable / total)
-                if answerable == 0:
+                q_ans_stats.append(sum(ans_scores) / total)
+                if considered == 0:
                     q_scores.append(0.5)
                 else:
-                    q_scores.append(disagreements / answerable)
+                    q_scores.append(disagreements / considered)
             sent_scores.append(sum(q_scores) / len(q_scores) if q_scores else 0.0)
             answerability_stats.append(q_ans_stats)
 
