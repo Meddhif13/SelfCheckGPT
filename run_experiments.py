@@ -295,6 +295,18 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         help="Number of stratified folds for combiner cross-validation (set to 1 to disable).",
     )
     parser.add_argument(
+        "--combiner-l2",
+        type=float,
+        default=0.0,
+        help="L2 regularisation strength for the combiner (weight decay).",
+    )
+    parser.add_argument(
+        "--combiner-patience",
+        type=int,
+        default=0,
+        help="Early stopping patience for the combiner (0 disables early stopping).",
+    )
+    parser.add_argument(
         "--mqag-metric",
         type=str,
         default="counting",
@@ -326,6 +338,9 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         args.cv_folds = max(args.cv_folds, 5)
         args.mqag_metric = "kl"
         args.mqag_answerability_threshold = 0.9
+        if args.combiner_l2 == 0.0:
+            args.combiner_l2 = 1e-4
+        args.combiner_patience = max(args.combiner_patience, 5)
 
     if (args.top_k is not None or args.top_p is not None) and not args.resample:
         logging.info(
@@ -464,6 +479,30 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                 train_labels = labels
             train_score_matrix[name] = scores
 
+        # Evaluate metrics on validation data for combiner early stopping
+        val_score_matrix: dict[str, List[float]] = {}
+        val_labels: List[int] | None = None
+        if val_examples:
+            for name in metric_names:
+                if name not in METRICS or name not in train_score_matrix:
+                    continue
+                try:
+                    metric = get_metric(name, temperature=metric_temps.get(name, 1.0))
+                    eval_temp = 1.0 if name in {"prompt", "nli"} else metric_temps.get(name, 1.0)
+                    _, scores, labels = evaluate(
+                        metric,
+                        val_examples,
+                        bins=args.calib_bins,
+                        return_scores=True,
+                        temperature=eval_temp,
+                    )
+                except Exception as exc:  # pragma: no cover - optional dependencies
+                    logging.warning("Metric %s failed on validation data: %s", name, exc)
+                    continue
+                if val_labels is None:
+                    val_labels = labels
+                val_score_matrix[name] = scores
+
         # Evaluate metrics on test data
         summary_rows: List[dict[str, float | str]] = []
         test_score_matrix: dict[str, List[float]] = {}
@@ -515,7 +554,13 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                 import torch
                 from selfcheck_combiner import SelfCheckCombiner
 
-                feature_names = [n for n in metric_names if n in train_score_matrix and n in test_score_matrix]
+                feature_names = [
+                    n
+                    for n in metric_names
+                    if n in train_score_matrix
+                    and n in test_score_matrix
+                    and (not val_score_matrix or n in val_score_matrix)
+                ]
                 if feature_names:
                     X_train = np.column_stack([train_score_matrix[n] for n in feature_names])
                     y_train = np.array(train_labels)
@@ -534,8 +579,15 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                             )
                             fold_stats = []
                             for tr_idx, val_idx in skf.split(X_train, y_train):
-                                comb_fold = SelfCheckCombiner()
-                                comb_fold.fit(X_train[tr_idx], y_train[tr_idx])
+                                comb_fold = SelfCheckCombiner(
+                                    l2=args.combiner_l2, patience=args.combiner_patience
+                                )
+                                comb_fold.fit(
+                                    X_train[tr_idx],
+                                    y_train[tr_idx],
+                                    X_val=X_train[val_idx],
+                                    y_val=y_train[val_idx],
+                                )
                                 val_scores = comb_fold.predict(X_train[val_idx])
                                 fold_stats.append(
                                     _compute_stats(
@@ -553,8 +605,15 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                                 )
                             }
 
-                    comb = SelfCheckCombiner()
-                    comb.fit(X_train, y_train)
+                    comb = SelfCheckCombiner(
+                        l2=args.combiner_l2, patience=args.combiner_patience
+                    )
+                    X_val = None
+                    y_val_arr = None
+                    if val_score_matrix and val_labels is not None:
+                        X_val = np.column_stack([val_score_matrix[n] for n in feature_names])
+                        y_val_arr = np.array(val_labels)
+                    comb.fit(X_train, y_train, X_val=X_val, y_val=y_val_arr)
                     torch.save(comb._model.state_dict(), temp_dir / "combiner.pt")
 
                     X_test = np.column_stack([test_score_matrix[n] for n in feature_names])
