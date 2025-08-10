@@ -90,6 +90,15 @@ def test_ngram_document_aggregates():
     assert result["avg_max_neg_logprob"] == pytest.approx(expected_max, abs=1e-6)
 
 
+def test_ngram_with_corpus(tmp_path):
+    corpus_path = tmp_path / "corpus.txt"
+    corpus_path.write_text("common word common word")
+    metric = SelfCheckNgram(corpus=corpus_path)
+    sents = ["common word", "rare token"]
+    scores = metric.predict(sents, [])
+    assert scores["sentence_scores"][1] > scores["sentence_scores"][0]
+
+
 def test_nli_entailment_and_contradiction():
     def fake_nli(premise: str, hypothesis: str) -> list[float]:
         if "France" in premise and "France" in hypothesis:
