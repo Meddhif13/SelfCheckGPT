@@ -309,142 +309,77 @@ def test_mqag_allows_model_and_device(monkeypatch):
         AutoModelForSeq2SeqLM=types.SimpleNamespace(from_pretrained=fake_model_from_pretrained),
         LongformerTokenizer=types.SimpleNamespace(from_pretrained=fake_tok_from_pretrained),
         LongformerForMultipleChoice=types.SimpleNamespace(from_pretrained=fake_model_from_pretrained),
+        AutoModelForSequenceClassification=types.SimpleNamespace(
+            from_pretrained=fake_model_from_pretrained
+        ),
     )
     monkeypatch.setitem(sys.modules, "transformers", module)
 
-    SelfCheckMQAG(g1_model="g1", g2_model="g2", qa_model="qa", device="cuda:0")
+    SelfCheckMQAG(
+        g1_model="g1", g2_model="g2", qa_model="qa", device="cuda:0"
+    )
 
     assert ("tokenizer", "g1") in calls
     assert ("tokenizer", "g2") in calls
     assert ("tokenizer", "qa") in calls
-    assert calls.count(("to", "cuda:0")) == 3
+    assert any("potsawee/longformer-large-4096-answerable-squad2" in t[1] for t in calls if t[0]=="tokenizer")
+    assert calls.count(("to", "cuda:0")) == 4
     assert ("eval", "g1") in calls and ("eval", "g2") in calls and ("eval", "qa") in calls
+    assert any(c[0] == "eval" and c[1].endswith("answerable-squad2") for c in calls)
 
 
-def test_mqag_multiple_questions():
-    def fake_qg(sentence: str) -> list[str]:
-        if "John" in sentence:
-            return ["What does John love?", "Who loves pizza?"]
-        return ["What does Lucy climb?", "Who climbs trees?"]
+def test_mqag_probability_distance():
+    def fake_qg(sentence: str) -> list[dict]:
+        return [
+            {
+                "question": "What does John love?",
+                "options": ["pizza", "pasta", "sushi", "burger"],
+            }
+        ]
 
-    def fake_qa(question: str, context: str) -> str:
-        if question == "What does John love?" and "pizza" in context:
-            return "pizza"
-        if question == "Who loves pizza?" and "John" in context and "pizza" in context:
-            return "john"
-        if question == "What does Lucy climb?" and "trees" in context:
-            return "trees"
-        if question == "Who climbs trees?" and "Lucy" in context and "trees" in context:
-            return "lucy"
-        return ""
-
-    metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
-    sents = ["John loves pizza", "Lucy climbs trees"]
-    samples = [
-        "Yesterday John ate pizza",
-        "John still loves pizza",
-        "Yesterday Lucy climbed trees",
-    ]
-    scores, ans_stats = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 0.0)
-    assert math.isclose(scores[1], 0.0)
-    assert all(
-        math.isclose(a, b)
-        for row, ref in zip(ans_stats, [[2 / 3, 2 / 3], [1 / 3, 1 / 3]])
-        for a, b in zip(row, ref)
-    )
-    assert metric.last_answerability == ans_stats
-    assert metric.last_disagreement == scores
-    assert math.isclose(metric.avg_disagreement, sum(scores) / 2)
-    assert math.isclose(metric.avg_answerability, 0.5)
-    assert all(
-        math.isclose(a, b)
-        for a, b in zip(metric.last_unanswerable, [1 / 3, 2 / 3])
-    )
-    assert math.isclose(
-        metric.avg_unanswerable, sum(metric.last_unanswerable) / 2
-    )
-
-
-def test_mqag_partial_unanswerable():
-    def fake_qg(sentence: str) -> list[str]:
-        return ["What does John love?", "Where does John live?"]
-
-    def fake_qa(question: str, context: str) -> str:
-        if question == "What does John love?" and "pizza" in context:
-            return "pizza"
-        if question == "Where does John live?" and "Boston" in context:
-            return "boston"
-        return ""
-
-    metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
-    sents = ["John loves pizza and lives in Boston"]
-    samples = ["John loves pizza in Boston", "John loves pizza"]
-    scores, ans_stats = metric.predict(sents, samples)
-    assert math.isclose(scores[0], 0.0)
-    assert ans_stats == [[1.0, 0.5]]
-    assert metric.last_answerability == ans_stats
-    assert metric.last_disagreement == scores
-    assert metric.avg_disagreement == scores[0]
-    assert math.isclose(metric.avg_answerability, 0.75)
-    assert metric.last_unanswerable == [0.25]
-    assert metric.avg_unanswerable == 0.25
-
-
-def test_mqag_bayes_methods():
-    def fake_qg(sentence: str) -> list[str]:
-        return ["What does John love?"]
-
-    def fake_qa(question: str, context: str) -> str:
-        if question == "What does John love?" and "pizza" in context:
-            return "pizza"
-        if question == "What does John love?" and "pasta" in context:
-            return "pasta"
-        return ""
+    def fake_qa(question: str, options: list[str], context: str) -> list[float]:
+        if "pizza" in context:
+            return [0.9, 0.05, 0.03, 0.02]
+        if "pasta" in context:
+            return [0.05, 0.9, 0.03, 0.02]
+        return [0.25, 0.25, 0.25, 0.25]
 
     metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
     sents = ["John loves pizza"]
     samples = ["John loves pizza", "John loves pasta"]
-    beta1, beta2 = 0.1, 0.6
-    scores_bayes, _ = metric.predict(
-        sents,
-        samples,
-        scoring_method="bayes",
-        beta1=beta1,
-        beta2=beta2,
+    scores, ans_stats = metric.predict(
+        sents, samples, metric="counting", disagreement_threshold=0.5
     )
-    scores_alpha, _ = metric.predict(
-        sents,
-        samples,
-        scoring_method="bayes_with_alpha",
-        beta1=beta1,
-        beta2=beta2,
-    )
-    gamma1 = beta2 / (1 - beta1)
-    gamma2 = beta1 / (1 - beta2)
-    expected = (gamma2 ** 1) / ((gamma1 ** 1) + (gamma2 ** 1))
-    assert math.isclose(scores_bayes[0], expected)
-    assert scores_bayes == scores_alpha
+    assert math.isclose(scores[0], 0.5)
+    assert ans_stats == [[1.0]]
+    assert metric.last_answerability == ans_stats
+    assert metric.last_disagreement == scores
 
 
-def test_mqag_partial_match():
-    def fake_qg(sentence: str) -> list[str]:
-        return ["What does John love?"]
+def test_mqag_answerability_filter():
+    def fake_qg(sentence: str) -> list[dict]:
+        return [
+            {
+                "question": "What does John love?",
+                "options": ["pizza", "pasta", "sushi", "burger"],
+            }
+        ]
 
-    def fake_qa(question: str, context: str) -> str:
-        if "pepperoni pizza" in context:
-            return "pepperoni pizza"
+    def fake_qa(question: str, options: list[str], context: str) -> list[float]:
         if "pizza" in context:
-            return "pizza"
-        return ""
+            return [0.9, 0.05, 0.03, 0.02]
+        return [0.3, 0.3, 0.2, 0.2]
 
     metric = SelfCheckMQAG(qg_fn=fake_qg, qa_fn=fake_qa)
-    sents = ["John loves pepperoni pizza"]
-    samples = ["John loves pepperoni pizza", "John loves pizza"]
-    scores, _ = metric.predict(sents, samples)
-    f1 = metric._f1("pizza", "pepperoni pizza")
-    expected = (2 - (1 + f1)) / 2
-    assert math.isclose(scores[0], expected)
+    sents = ["John loves pizza"]
+    samples = ["Unknown"]
+    scores, ans_stats = metric.predict(
+        sents, samples, metric="counting", disagreement_threshold=0.5
+    )
+    assert math.isclose(scores[0], 0.5)
+    assert ans_stats == [[0.0]]
+    assert metric.last_unanswerable == [1.0]
+    assert math.isclose(metric.avg_unanswerable, 1.0)
 
 
 def test_prompt_mapping_yes_no():

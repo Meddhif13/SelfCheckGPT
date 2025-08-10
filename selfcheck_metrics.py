@@ -32,6 +32,52 @@ from selfcheckgpt.utils import (
 )
 
 
+def get_prob_distances(
+    p_ref: Sequence[float], p_other: Sequence[float]
+) -> dict[str, float]:
+    """Return distance measures between two probability vectors.
+
+    Parameters
+    ----------
+    p_ref, p_other:
+        Reference and comparison probability distributions.  They are
+        automatically normalised and a small epsilon is added to avoid
+        numerical issues with zeros.
+
+    Returns
+    -------
+    dict
+        Mapping with the following keys: ``"kl"`` for Kullback-Leibler
+        divergence, ``"counting"`` which measures ``1 - P_ref"s option in
+        the other distribution, ``"hellinger"`` and ``"total_variation"``.
+    """
+
+    import numpy as np
+
+    ref = np.array(p_ref, dtype=float)
+    other = np.array(p_other, dtype=float)
+    if ref.sum() == 0:
+        ref = np.ones_like(ref) / len(ref)
+    if other.sum() == 0:
+        other = np.ones_like(other) / len(other)
+    ref = ref / ref.sum()
+    other = other / other.sum()
+    eps = 1e-8
+
+    kl = float(np.sum(ref * np.log((ref + eps) / (other + eps))))
+    counting = 1.0 - float(other[np.argmax(ref)])
+    hellinger = float(
+        np.sqrt(0.5 * np.sum((np.sqrt(ref) - np.sqrt(other)) ** 2))
+    )
+    total_variation = float(0.5 * np.sum(np.abs(ref - other)))
+    return {
+        "kl": kl,
+        "counting": counting,
+        "hellinger": hellinger,
+        "total_variation": total_variation,
+    }
+
+
 def find_optimal_temperature(
     logits: Iterable[Sequence[float]], labels: Iterable[int]
 ) -> float:
@@ -147,13 +193,14 @@ class SelfCheckMQAG:
 
     def __init__(
         self,
-        qg_fn: Callable[[str], Iterable[str]] | None = None,
-        qa_fn: Callable[[str, str], str] | None = None,
+        qg_fn: Callable[[str], Iterable[dict]] | None = None,
+        qa_fn: Callable[[str, Sequence[str], str], Sequence[float]] | None = None,
         batch_size: int = 8,
         num_questions: int = 3,
         g1_model: str | None = None,
         g2_model: str | None = None,
         qa_model: str | None = None,
+        answer_model: str | None = None,
         device: int | str | None = None,
     ) -> None:
         self.qg_fn = qg_fn
@@ -176,6 +223,7 @@ class SelfCheckMQAG:
             try:  # pragma: no cover - heavy branch
                 from transformers import (
                     AutoModelForSeq2SeqLM,
+                    AutoModelForSequenceClassification,
                     AutoTokenizer,
                     LongformerForMultipleChoice,
                     LongformerTokenizer,
@@ -201,6 +249,7 @@ class SelfCheckMQAG:
             g1_model = g1_model or MQAGConfig.generation1_squad
             g2_model = g2_model or MQAGConfig.generation2
             qa_model = qa_model or MQAGConfig.answering
+            answer_model = answer_model or "potsawee/longformer-large-4096-answerable-squad2"
 
             self.g1_tokenizer = AutoTokenizer.from_pretrained(g1_model)
             self.g1_model = AutoModelForSeq2SeqLM.from_pretrained(g1_model)
@@ -208,14 +257,18 @@ class SelfCheckMQAG:
             self.g2_model = AutoModelForSeq2SeqLM.from_pretrained(g2_model)
             self.a_tokenizer = LongformerTokenizer.from_pretrained(qa_model)
             self.a_model = LongformerForMultipleChoice.from_pretrained(qa_model)
+            self.ans_tokenizer = LongformerTokenizer.from_pretrained(answer_model)
+            self.ans_model = AutoModelForSequenceClassification.from_pretrained(
+                answer_model
+            )
 
             # Move to device and set eval mode
-            for model in (self.g1_model, self.g2_model, self.a_model):
+            for model in (self.g1_model, self.g2_model, self.a_model, self.ans_model):
                 model.to(self.device)
                 model.eval()
         else:
-            self.g1_model = self.g2_model = self.a_model = None
-            self.g1_tokenizer = self.g2_tokenizer = self.a_tokenizer = None
+            self.g1_model = self.g2_model = self.a_model = self.ans_model = None
+            self.g1_tokenizer = self.g2_tokenizer = self.a_tokenizer = self.ans_tokenizer = None
             self.device = device
 
     @staticmethod
@@ -244,32 +297,23 @@ class SelfCheckMQAG:
         sentences: Iterable[str],
         samples: Iterable[str],
         *,
-        scoring_method: str = "counting",
-        beta1: float = 0.1,
-        beta2: float = 0.5,
+        metric: str = "counting",
+        disagreement_threshold: float = 0.5,
         answerability_threshold: float = 0.5,
     ) -> tuple[List[float], List[List[float]]]:
-        """Score ``sentences`` against ``samples``.
+        """Score ``sentences`` against ``samples`` using probability distances.
 
-        Parameters
-        ----------
-        sentences, samples:
-            Main passage sentences and sampled passages.
-        scoring_method: {"counting", "bayes", "bayes_with_alpha"}
-            Strategy used to convert matches into inconsistency scores.
-        beta1, beta2:
-            Beta hyper-parameters for Bayesian scoring.
-        answerability_threshold: float
-            Minimum answerability score for a sample to be considered in the
-            counting and vanilla Bayes methods.
+        ``metric`` selects which distance from :func:`get_prob_distances` is
+        used for aggregating disagreement.  The method also records
+        per-question answerability ratios which mirror the original API.
         """
 
         sentences = list(sentences)
         samples = list(samples)
         total = len(samples) or 1
-        assert scoring_method in {"counting", "bayes", "bayes_with_alpha"}
 
-        # Prepare question generation and answering helpers
+        assert metric in {"kl", "counting", "hellinger", "total_variation"}
+
         if getattr(self, "g1_model", None) is not None:
             torch = self._torch
 
@@ -319,7 +363,7 @@ class SelfCheckMQAG:
                     questions.append({"question": question, "options": options})
                 return questions
 
-            def _answer(q: dict, ctx: str) -> tuple[str, float]:
+            def _answer_probs(q: dict, ctx: str) -> Sequence[float]:
                 if torch is None:  # pragma: no cover - optional dependency
                     raise RuntimeError("PyTorch is required for MQAG")
                 encoded = prepare_answering_input(
@@ -331,85 +375,50 @@ class SelfCheckMQAG:
                 )
                 logits = self.a_model(**encoded).logits[0]
                 probs = torch.softmax(logits, dim=-1)
-                idx = int(torch.argmax(probs).item())
-                return q["options"][idx].lower(), float(probs[idx].item())
-
-            def _ref_answers(qs: List[dict], _: str) -> List[str]:
-                return [q["options"][0].lower() for q in qs]
+                return probs.tolist()
 
         else:
-            def _gen_questions(text: str) -> List[str]:
+            def _gen_questions(text: str) -> List[dict]:
                 q_res = self.qg_fn(text)
-                if isinstance(q_res, str):
-                    return [q_res.strip()]
-                return [q.strip() for q in q_res]
+                return list(q_res)
 
-            def _answer(q: str, ctx: str) -> tuple[str, float]:
-                ans = self.qa_fn(q, ctx).strip().lower()
-                return ans, (1.0 if ans else 0.0)
-
-            def _ref_answers(qs: List[str], s: str) -> List[str]:
-                return [self.qa_fn(q, s).strip().lower() for q in qs]
+            def _answer_probs(q: dict, ctx: str) -> Sequence[float]:
+                return self.qa_fn(q["question"], q["options"], ctx)
 
         all_questions = [_gen_questions(s) for s in sentences]
-        all_ref_answers = [
-            _ref_answers(qs, s) for qs, s in zip(all_questions, sentences)
+
+        # reference distributions from the original sentences
+        ref_dists = [
+            [_answer_probs(q, sent) for q in qs] for qs, sent in zip(all_questions, sentences)
         ]
 
         sent_scores: List[float] = []
         answerability_stats: List[List[float]] = []
-        for qs, refs in zip(all_questions, all_ref_answers):
+        for qs, refs in zip(all_questions, ref_dists):
             q_scores: List[float] = []
             q_ans_stats: List[float] = []
-            for q, ref in zip(qs, refs):
-                ref_ans_score = 1.0 if ref else 0.0
-                matches = 0.0
-                mismatches = 0.0
-                soft_match = 0.0
-                soft_mismatch = 0.0
+            for q, ref_prob in zip(qs, refs):
+                disagreements = 0.0
                 answerable = 0
                 for sample in samples:
-                    ans, ans_score = _answer(q, sample)
-                    f1 = self._f1(ans, ref)
+                    probs = _answer_probs(q, sample)
+                    ans_score = max(probs) if probs else 0.0
                     if ans_score >= answerability_threshold:
                         answerable += 1
-                        matches += f1
-                        mismatches += 1 - f1
-                    soft_match += ans_score * f1
-                    soft_mismatch += ans_score * (1 - f1)
+                        distances = get_prob_distances(ref_prob, probs)
+                        if distances[metric] > disagreement_threshold:
+                            disagreements += 1
                 q_ans_stats.append(answerable / total)
-
-                if scoring_method == "counting":
-                    if ref_ans_score < answerability_threshold:
-                        score = 0.5
-                    elif answerable == 0:
-                        score = 0.5
-                    else:
-                        score = (answerable - matches) / answerable
-                elif scoring_method == "bayes":
-                    if ref_ans_score < answerability_threshold:
-                        score = 0.5
-                    else:
-                        gamma1 = beta2 / (1.0 - beta1)
-                        gamma2 = beta1 / (1.0 - beta2)
-                        score = (gamma2 ** mismatches) / (
-                            (gamma1 ** matches) + (gamma2 ** mismatches)
-                        )
-                else:  # bayes_with_alpha
-                    gamma1 = beta2 / (1.0 - beta1)
-                    gamma2 = beta1 / (1.0 - beta2)
-                    score = (gamma2 ** soft_mismatch) / (
-                        (gamma1 ** soft_match) + (gamma2 ** soft_mismatch)
-                    )
-                q_scores.append(score)
-
-            sent_scores.append(sum(q_scores) / len(q_scores))
+                if answerable == 0:
+                    q_scores.append(0.5)
+                else:
+                    q_scores.append(disagreements / answerable)
+            sent_scores.append(sum(q_scores) / len(q_scores) if q_scores else 0.0)
             answerability_stats.append(q_ans_stats)
 
         self.last_disagreement = sent_scores
         self.last_answerability = answerability_stats
 
-        # Per-sentence and global statistics derived from the per-question data
         self.last_unanswerable = [
             1 - (sum(qs) / len(qs) if qs else 0.0) for qs in answerability_stats
         ]
