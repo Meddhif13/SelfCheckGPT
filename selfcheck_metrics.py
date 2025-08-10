@@ -22,8 +22,10 @@ from __future__ import annotations
 from typing import Callable, Iterable, List, Sequence
 import collections
 import math
+import os
 import re
 import string
+from pathlib import Path
 from selfcheckgpt.utils import (
     MQAGConfig,
     prepare_answering_input,
@@ -497,17 +499,68 @@ class SelfCheckNgram:
     smoothing: str, optional
         Smoothing method to use.  Supported values are ``"backoff"`` and
         ``"kneser_ney"`` (default ``"backoff"``).
+    corpus: str | os.PathLike | Iterable[str], optional
+        Reference corpus used to pre-build n-gram counts.  If provided the
+        counts are combined with sample based statistics on every call to
+        :meth:`predict`.
     """
 
-    def __init__(self, n: int = 1, smoothing: str = "backoff", discount: float = 0.75) -> None:
+    def __init__(
+        self,
+        n: int = 1,
+        smoothing: str = "backoff",
+        discount: float = 0.75,
+        corpus: str | os.PathLike | Iterable[str] | None = None,
+    ) -> None:
         self.n = max(1, n)
         self.smoothing = smoothing
         self.discount = discount
+        self._corpus_texts: list[str] | None = None
+        self._corpus_models: dict[int, tuple] = {}
+        if corpus is not None:
+            if isinstance(corpus, (str, os.PathLike, Path)):
+                text = Path(corpus).read_text(encoding="utf8")
+                self._corpus_texts = [text]
+            else:
+                self._corpus_texts = list(corpus)
+            # Pre-build model for default n
+            self._corpus_models[self.n] = self._build_model(self._corpus_texts)
 
     # -- Utility -------------------------------------------------------------
     @staticmethod
     def _tokenize(text: str) -> List[str]:
         return text.lower().split()
+
+    def _ensure_corpus_model(self, order: int):
+        if self._corpus_texts is None:
+            return None
+        if order not in self._corpus_models:
+            self_n_backup = self.n
+            self.n = order
+            self._corpus_models[order] = self._build_model(self._corpus_texts)
+            self.n = self_n_backup
+        return self._corpus_models[order]
+
+    @staticmethod
+    def _combine_models(model_a, model_b, order: int):
+        counts_a, followers_a, histories_a, total_a, _, _ = model_a
+        counts_b, followers_b, histories_b, total_b, _, _ = model_b
+        counts = [counts_a[i] + counts_b[i] for i in range(order)]
+        followers: list[collections.defaultdict] = []
+        for i in range(max(0, order - 1)):
+            merged = collections.defaultdict(set)
+            for d in (followers_a[i], followers_b[i]):
+                for key, vals in d.items():
+                    merged[key].update(vals)
+            followers.append(merged)
+        histories = collections.defaultdict(set)
+        for d in (histories_a, histories_b):
+            for key, vals in d.items():
+                histories[key].update(vals)
+        total_tokens = total_a + total_b
+        vocab_size = len(counts[0]) or 1
+        total_continuations = sum(len(v) for v in histories.values()) or 1
+        return counts, followers, histories, total_tokens, vocab_size, total_continuations
 
     def _build_model(self, samples: Iterable[str]):
         counts = [collections.Counter() for _ in range(self.n)]
@@ -616,8 +669,28 @@ class SelfCheckNgram:
         order = max(1, n or self.n)
         self_n_backup = self.n
         self.n = order
-        counts, followers, histories, total_tokens, vocab_size, total_continuations = self._build_model(samples)
+        sample_model = self._build_model(samples)
         self.n = self_n_backup
+
+        corpus_model = self._ensure_corpus_model(order)
+        if corpus_model is not None:
+            (
+                counts,
+                followers,
+                histories,
+                total_tokens,
+                vocab_size,
+                total_continuations,
+            ) = self._combine_models(corpus_model, sample_model, order)
+        else:
+            (
+                counts,
+                followers,
+                histories,
+                total_tokens,
+                vocab_size,
+                total_continuations,
+            ) = sample_model
 
         sent_avgs: List[float] = []
         sent_maxes: List[float] = []
