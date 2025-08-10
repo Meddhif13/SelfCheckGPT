@@ -14,6 +14,32 @@ classes for five scoring strategies:
 * **NLI** – entailment check using a pretrained NLI model.
 * **LLM Prompt** – ask an external model whether a sentence is supported.
 
+## Quick MQAG example
+
+Run the full MQAG pipeline with real HuggingFace models:
+
+```python
+from selfcheck_metrics import SelfCheckMQAG
+
+sentences = ["Paris is the capital of Germany."]
+samples = [
+    "Berlin is the capital of Germany.",
+    "Paris is the capital of France.",
+]
+
+mqag = SelfCheckMQAG(
+    g1_model="potsawee/t5-base-squad-qg",
+    g2_model="potsawee/t5-base-distractor-generation",
+    qa_model="potsawee/longformer-large-4096-mc-squad2",
+    answer_model="potsawee/longformer-large-4096-answerable-squad2",
+)
+
+scores, answerability = mqag.predict(sentences, samples)
+print(scores[0], answerability[0])
+```
+
+The first call downloads the model weights and may take a moment.
+
 The `run_experiments.py` script can evaluate any of the simplified
 metrics on the WikiBio hallucination dataset.  It mirrors the evaluation
 loop of the original project but uses light‑weight stand‑ins so that the
