@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List
 import math
+import functools
 
 import matplotlib
 
@@ -108,9 +109,18 @@ def _compute_stats(scores: List[float], labels: List[int], *, bins: int = 10) ->
 
 
 def evaluate(
-    metric, dataset: Iterable[dict], *, bins: int = 10, return_scores: bool = False
+    metric,
+    dataset: Iterable[dict],
+    *,
+    bins: int = 10,
+    return_scores: bool = False,
+    temperature: float = 1.0,
 ) -> dict | tuple[dict, List[float], List[int]]:
-    """Return scoring results and optionally raw scores and labels."""
+    """Return scoring results and optionally raw scores and labels.
+
+    ``temperature`` allows optional temperature scaling of the resulting scores
+    using ``find_optimal_temperature`` calibrated on a validation split.
+    """
 
     all_scores: List[float] = []
     all_labels: List[int] = []
@@ -131,6 +141,15 @@ def evaluate(
             else:
                 all_scores.append(s)
         all_labels.extend(labels)
+
+    if temperature != 1.0:
+        scaled: List[float] = []
+        for s in all_scores:
+            p = min(max(s, 1e-8), 1 - 1e-8)
+            logit = math.log(p / (1 - p))
+            p = 1 / (1 + math.exp(-logit / temperature))
+            scaled.append(p)
+        all_scores = scaled
 
     stats = _compute_stats(all_scores, all_labels, bins=bins)
     if return_scores:
@@ -276,6 +295,19 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         help="Number of stratified folds for combiner cross-validation (set to 1 to disable).",
     )
     parser.add_argument(
+        "--mqag-metric",
+        type=str,
+        default="counting",
+        choices=["kl", "counting", "hellinger", "total_variation"],
+        help="Disagreement metric used by MQAG.",
+    )
+    parser.add_argument(
+        "--mqag-answerability-threshold",
+        type=float,
+        default=0.5,
+        help="Answerability threshold for MQAG.",
+    )
+    parser.add_argument(
         "--paper-config",
         action="store_true",
         help=(
@@ -292,6 +324,8 @@ def main() -> None:  # pragma: no cover - exercised via CLI
             args.top_p = 0.95
         args.resample = True
         args.cv_folds = max(args.cv_folds, 5)
+        args.mqag_metric = "kl"
+        args.mqag_answerability_threshold = 0.9
 
     if (args.top_k is not None or args.top_p is not None) and not args.resample:
         logging.info(
@@ -368,64 +402,43 @@ def main() -> None:  # pragma: no cover - exercised via CLI
         test_ds = load_wikibio_hallucination(split=args.test_split)
         test_examples = prepare_split(list(test_ds), "test")
 
-        nli_temperature = 1.0
-        prompt_temperature = 1.0
-        if "nli" in metric_names and val_examples:
-            try:
-                metric_cal = SelfCheckNLI()
-                calib_logits: list[list[float]] = []
-                calib_labels: list[int] = []
-                for ex in val_examples:
-                    _, per_sent_logits = metric_cal.predict(
-                        ex["gpt3_sentences"],
-                        ex["gpt3_text_samples"],
-                        return_logits=True,
-                    )
-                    labels = load_annotations(ex)
-                    for lbl, sent_logits in zip(labels, per_sent_logits):
-                        for logit in sent_logits:
-                            calib_logits.append(logit)
-                            calib_labels.append(lbl)
-                nli_temperature = find_optimal_temperature(calib_logits, calib_labels)
-            except Exception as exc:  # pragma: no cover - optional dependency
-                logging.warning("NLI temperature calibration failed: %s", exc)
-
-        if "prompt" in metric_names and val_examples:
-            try:
-                metric_cal = SelfCheckPrompt(ask_fn=llm.ask_yes_no if llm else None)
-                calib_probs: list[float] = []
-                calib_labels: list[int] = []
-                for ex in val_examples:
-                    _, per_sent_probs = metric_cal.predict(
-                        ex["gpt3_sentences"],
-                        ex["gpt3_text_samples"],
-                        return_probs=True,
-                    )
-                    labels = load_annotations(ex)
-                    for lbl, sent_probs in zip(labels, per_sent_probs):
-                        for prob in sent_probs:
-                            p = min(max(prob, 1e-8), 1 - 1e-8)
-                            logit = math.log(p / (1 - p))
-                            calib_probs.append(logit)
-                            calib_labels.append(1 - lbl)
-                calib_logits = [[p, 0.0] for p in calib_probs]
-                prompt_temperature = find_optimal_temperature(
-                    calib_logits, calib_labels
-                )
-            except Exception as exc:  # pragma: no cover - optional dependency
-                logging.warning("Prompt temperature calibration failed: %s", exc)
-
-        def get_metric(name: str):
+        def get_metric(name: str, *, temperature: float = 1.0):
             if name == "ngram":
                 return SelfCheckNgram(n=args.ngram_n)
             if name == "prompt":
                 return SelfCheckPrompt(
                     ask_fn=llm.ask_yes_no if llm else None,
-                    temperature=prompt_temperature,
+                    temperature=temperature,
                 )
             if name == "nli":
-                return SelfCheckNLI(temperature=nli_temperature)
+                return SelfCheckNLI(temperature=temperature)
+            if name == "mqag":
+                metric = SelfCheckMQAG()
+                metric.predict = functools.partial(
+                    metric.predict,
+                    metric=args.mqag_metric,
+                    answerability_threshold=args.mqag_answerability_threshold,
+                )
+                return metric
             return METRICS[name]()
+
+        metric_temps: dict[str, float] = {n: 1.0 for n in metric_names}
+        if val_examples:
+            for name in metric_names:
+                if name not in METRICS:
+                    continue
+                try:
+                    metric = get_metric(name)
+                    _, scores, labels = evaluate(
+                        metric, val_examples, bins=args.calib_bins, return_scores=True
+                    )
+                    logits = []
+                    for s in scores:
+                        p = min(max(s, 1e-8), 1 - 1e-8)
+                        logits.append([math.log(p / (1 - p)), 0.0])
+                    metric_temps[name] = find_optimal_temperature(logits, labels)
+                except Exception as exc:  # pragma: no cover - optional dependency
+                    logging.warning("Calibration for %s failed: %s", name, exc)
 
         # Evaluate metrics on training data for combiner fitting
         train_score_matrix: dict[str, List[float]] = {}
@@ -435,9 +448,14 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                 logging.warning("Unknown metric '%s' -- skipping", name)
                 continue
             try:
-                metric = get_metric(name)
+                metric = get_metric(name, temperature=metric_temps.get(name, 1.0))
+                eval_temp = 1.0 if name in {"prompt", "nli"} else metric_temps.get(name, 1.0)
                 _, scores, labels = evaluate(
-                    metric, train_examples, bins=args.calib_bins, return_scores=True
+                    metric,
+                    train_examples,
+                    bins=args.calib_bins,
+                    return_scores=True,
+                    temperature=eval_temp,
                 )
             except Exception as exc:  # pragma: no cover - optional dependencies
                 logging.warning("Metric %s failed: %s", name, exc)
@@ -458,9 +476,14 @@ def main() -> None:  # pragma: no cover - exercised via CLI
                 logging.warning("Skipping metric '%s' due to missing training scores", name)
                 continue
             try:
-                metric = get_metric(name)
+                metric = get_metric(name, temperature=metric_temps.get(name, 1.0))
+                eval_temp = 1.0 if name in {"prompt", "nli"} else metric_temps.get(name, 1.0)
                 stats, scores, labels = evaluate(
-                    metric, test_examples, bins=args.calib_bins, return_scores=True
+                    metric,
+                    test_examples,
+                    bins=args.calib_bins,
+                    return_scores=True,
+                    temperature=eval_temp,
                 )
             except Exception as exc:  # pragma: no cover - optional dependencies
                 logging.warning("Metric %s failed on test data: %s", name, exc)

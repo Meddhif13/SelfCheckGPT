@@ -111,6 +111,11 @@ pre‑computed samples in the dataset are truncated to the requested count.
 By default the script now follows the paper and uses 20 samples per
 prompt.
 
+The MQAG scorer exposes its disagreement metric and answerability
+threshold via ``--mqag-metric`` and ``--mqag-answerability-threshold``.
+Passing ``--paper-config`` sets them to the values used in the SelfCheckGPT
+paper (``kl`` and ``0.9`` respectively).
+
 The logistic‑regression combiner is trained on the specified training
 split and evaluated on the test split.  To mirror the exact settings
 from the paper, pass ``--paper-config`` which enables resampling, sets
