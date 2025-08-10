@@ -281,32 +281,44 @@ def test_mqag_allows_model_and_device(monkeypatch):
 
     calls: list[tuple] = []
 
-    def fake_pipeline(task, model=None, device=None):
-        calls.append((task, model, device))
+    class FakeModel:
+        def __init__(self, name):
+            self.name = name
+            calls.append(("model", name))
 
-        if task == "text2text-generation":
-            def _qg(text, num_return_sequences, num_beams):
-                return [{"generated_text": "Q1"} for _ in range(num_return_sequences)]
+        def to(self, device):
+            calls.append(("to", device))
+            return self
 
-            return _qg
+        def eval(self):
+            calls.append(("eval", self.name))
+            return self
 
-        def _qa(inputs):
-            return {"answer": "ans"}
+    class FakeTokenizer:
+        def __init__(self, name):
+            calls.append(("tokenizer", name))
 
-        return _qa
+    def fake_tok_from_pretrained(name):
+        return FakeTokenizer(name)
 
-    module = types.SimpleNamespace(pipeline=fake_pipeline)
+    def fake_model_from_pretrained(name):
+        return FakeModel(name)
+
+    module = types.SimpleNamespace(
+        AutoTokenizer=types.SimpleNamespace(from_pretrained=fake_tok_from_pretrained),
+        AutoModelForSeq2SeqLM=types.SimpleNamespace(from_pretrained=fake_model_from_pretrained),
+        LongformerTokenizer=types.SimpleNamespace(from_pretrained=fake_tok_from_pretrained),
+        LongformerForMultipleChoice=types.SimpleNamespace(from_pretrained=fake_model_from_pretrained),
+    )
     monkeypatch.setitem(sys.modules, "transformers", module)
 
-    metric = SelfCheckMQAG(
-        qg_model="t5-large", qa_model="deberta-v3-large", qg_device="cuda:0", qa_device="cuda:1"
-    )
-    metric.predict(["context"], ["sample"])
+    SelfCheckMQAG(g1_model="g1", g2_model="g2", qa_model="qa", device="cuda:0")
 
-    qg_call = [c for c in calls if c[0] == "text2text-generation"][0]
-    qa_call = [c for c in calls if c[0] == "question-answering"][0]
-    assert qg_call[1:] == ("t5-large", "cuda:0")
-    assert qa_call[1:] == ("deberta-v3-large", "cuda:1")
+    assert ("tokenizer", "g1") in calls
+    assert ("tokenizer", "g2") in calls
+    assert ("tokenizer", "qa") in calls
+    assert calls.count(("to", "cuda:0")) == 3
+    assert ("eval", "g1") in calls and ("eval", "g2") in calls and ("eval", "qa") in calls
 
 
 def test_mqag_multiple_questions():

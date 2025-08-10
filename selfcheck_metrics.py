@@ -24,6 +24,12 @@ import collections
 import math
 import re
 import string
+from selfcheckgpt.utils import (
+    MQAGConfig,
+    prepare_answering_input,
+    prepare_distractor_input,
+    prepare_qa_input,
+)
 
 
 def find_optimal_temperature(
@@ -145,10 +151,10 @@ class SelfCheckMQAG:
         qa_fn: Callable[[str, str], str] | None = None,
         batch_size: int = 8,
         num_questions: int = 3,
-        qg_model: str = "valhalla/t5-small-qg-hl",
-        qa_model: str = "distilbert-base-uncased-distilled-squad",
-        qg_device: int | str | None = None,
-        qa_device: int | str | None = None,
+        g1_model: str | None = None,
+        g2_model: str | None = None,
+        qa_model: str | None = None,
+        device: int | str | None = None,
     ) -> None:
         self.qg_fn = qg_fn
         self.qa_fn = qa_fn
@@ -168,29 +174,49 @@ class SelfCheckMQAG:
 
         if self.qg_fn is None or self.qa_fn is None:
             try:  # pragma: no cover - heavy branch
-                from transformers import pipeline  # type: ignore
-                import torch  # type: ignore
-
-                def _resolve(dev):
-                    if dev is not None:
-                        return dev
-                    return 0 if torch.cuda.is_available() else -1
-
-                self.qg_pipe = pipeline(
-                    "text2text-generation",
-                    model=qg_model,
-                    device=_resolve(qg_device),
-                )
-                self.qa_pipe = pipeline(
-                    "question-answering",
-                    model=qa_model,
-                    device=_resolve(qa_device),
+                from transformers import (
+                    AutoModelForSeq2SeqLM,
+                    AutoTokenizer,
+                    LongformerForMultipleChoice,
+                    LongformerTokenizer,
                 )
             except Exception as exc:  # pragma: no cover - optional dependency
                 raise RuntimeError("transformers models unavailable") from exc
+
+            try:  # pragma: no cover - optional dependency
+                import torch  # type: ignore
+            except Exception:  # pragma: no cover - optional dependency
+                torch = None  # type: ignore
+
+            def _resolve(dev):
+                if dev is not None:
+                    return dev
+                if torch is not None and getattr(torch.cuda, "is_available", lambda: False)():
+                    return "cuda"
+                return "cpu"
+
+            self.device = _resolve(device)
+            self._torch = torch
+
+            g1_model = g1_model or MQAGConfig.generation1_squad
+            g2_model = g2_model or MQAGConfig.generation2
+            qa_model = qa_model or MQAGConfig.answering
+
+            self.g1_tokenizer = AutoTokenizer.from_pretrained(g1_model)
+            self.g1_model = AutoModelForSeq2SeqLM.from_pretrained(g1_model)
+            self.g2_tokenizer = AutoTokenizer.from_pretrained(g2_model)
+            self.g2_model = AutoModelForSeq2SeqLM.from_pretrained(g2_model)
+            self.a_tokenizer = LongformerTokenizer.from_pretrained(qa_model)
+            self.a_model = LongformerForMultipleChoice.from_pretrained(qa_model)
+
+            # Move to device and set eval mode
+            for model in (self.g1_model, self.g2_model, self.a_model):
+                model.to(self.device)
+                model.eval()
         else:
-            self.qg_pipe = None
-            self.qa_pipe = None
+            self.g1_model = self.g2_model = self.a_model = None
+            self.g1_tokenizer = self.g2_tokenizer = self.a_tokenizer = None
+            self.device = device
 
     @staticmethod
     def _normalize(text: str) -> list[str]:
@@ -244,22 +270,73 @@ class SelfCheckMQAG:
         assert scoring_method in {"counting", "bayes", "bayes_with_alpha"}
 
         # Prepare question generation and answering helpers
-        if getattr(self, "qg_pipe", None) is not None:
-            def _gen_questions(text: str) -> List[str]:
-                outputs = self.qg_pipe(
-                    text,
-                    num_return_sequences=self.num_questions,
-                    num_beams=self.num_questions,
-                )
-                return [o["generated_text"].strip() for o in outputs]
+        if getattr(self, "g1_model", None) is not None:
+            torch = self._torch
 
-            def _answer(q: str, ctx: str) -> str:
-                return (
-                    self.qa_pipe({"question": q, "context": ctx})
-                    .get("answer", "")
-                    .strip()
-                    .lower()
+            def _gen_questions(text: str) -> List[dict]:
+                qa_input_ids = prepare_qa_input(
+                    self.g1_tokenizer, context=text, device=self.device
                 )
+                questions: List[dict] = []
+                for _ in range(self.num_questions):
+                    outputs = self.g1_model.generate(
+                        qa_input_ids, max_new_tokens=128, do_sample=True
+                    )
+                    qa_text = self.g1_tokenizer.decode(
+                        outputs[0], skip_special_tokens=False
+                    )
+                    qa_text = qa_text.replace(
+                        self.g1_tokenizer.pad_token or "", ""
+                    ).replace(self.g1_tokenizer.eos_token or "", "")
+                    qa_split = [x.strip() for x in qa_text.split(self.g1_tokenizer.sep_token)]
+                    if len(qa_split) != 2:
+                        continue
+                    question, answer = qa_split
+                    distractor_ids = prepare_distractor_input(
+                        self.g2_tokenizer,
+                        context=text,
+                        question=question,
+                        answer=answer,
+                        device=self.device,
+                        separator=self.g2_tokenizer.sep_token,
+                    )
+                    outputs = self.g2_model.generate(
+                        distractor_ids, max_new_tokens=128, do_sample=True
+                    )
+                    distractors = self.g2_tokenizer.decode(
+                        outputs[0], skip_special_tokens=False
+                    )
+                    distractors = distractors.replace(
+                        self.g2_tokenizer.pad_token or "", ""
+                    ).replace(self.g2_tokenizer.eos_token or "", "")
+                    distractors = re.sub(
+                        "<extra\\S+>", self.g2_tokenizer.sep_token, distractors
+                    )
+                    opts = [y.strip() for y in distractors.split(self.g2_tokenizer.sep_token)]
+                    options = [answer] + opts
+                    while len(options) < 4:
+                        options.append(options[-1] if options else "")
+                    questions.append({"question": question, "options": options})
+                return questions
+
+            def _answer(q: dict, ctx: str) -> tuple[str, float]:
+                if torch is None:  # pragma: no cover - optional dependency
+                    raise RuntimeError("PyTorch is required for MQAG")
+                encoded = prepare_answering_input(
+                    self.a_tokenizer,
+                    q["question"],
+                    q["options"],
+                    ctx,
+                    device=self.device,
+                )
+                logits = self.a_model(**encoded).logits[0]
+                probs = torch.softmax(logits, dim=-1)
+                idx = int(torch.argmax(probs).item())
+                return q["options"][idx].lower(), float(probs[idx].item())
+
+            def _ref_answers(qs: List[dict], _: str) -> List[str]:
+                return [q["options"][0].lower() for q in qs]
+
         else:
             def _gen_questions(text: str) -> List[str]:
                 q_res = self.qg_fn(text)
@@ -267,12 +344,16 @@ class SelfCheckMQAG:
                     return [q_res.strip()]
                 return [q.strip() for q in q_res]
 
-            def _answer(q: str, ctx: str) -> str:
-                return self.qa_fn(q, ctx).strip().lower()
+            def _answer(q: str, ctx: str) -> tuple[str, float]:
+                ans = self.qa_fn(q, ctx).strip().lower()
+                return ans, (1.0 if ans else 0.0)
 
-        all_questions: List[List[str]] = [_gen_questions(s) for s in sentences]
-        all_ref_answers: List[List[str]] = [
-            [_answer(q, s) for q in qs] for qs, s in zip(all_questions, sentences)
+            def _ref_answers(qs: List[str], s: str) -> List[str]:
+                return [self.qa_fn(q, s).strip().lower() for q in qs]
+
+        all_questions = [_gen_questions(s) for s in sentences]
+        all_ref_answers = [
+            _ref_answers(qs, s) for qs, s in zip(all_questions, sentences)
         ]
 
         sent_scores: List[float] = []
@@ -288,8 +369,7 @@ class SelfCheckMQAG:
                 soft_mismatch = 0.0
                 answerable = 0
                 for sample in samples:
-                    ans = _answer(q, sample)
-                    ans_score = 1.0 if ans else 0.0
+                    ans, ans_score = _answer(q, sample)
                     f1 = self._f1(ans, ref)
                     if ans_score >= answerability_threshold:
                         answerable += 1
