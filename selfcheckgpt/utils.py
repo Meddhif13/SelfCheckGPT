@@ -3,9 +3,9 @@
 This project only relies on a tiny subset of the real library.  The
 functions defined here provide the interfaces expected by
 ``selfcheck_metrics`` so that the tests can run without the heavy
-dependencies of the original project.  They intentionally implement only
-the minimal behaviour required by the tests; the generation and
-answering helpers merely raise :class:`NotImplementedError` if invoked.
+dependencies of the original project.  Only a handful of convenience
+wrappers around HuggingFace tokenizers are included; they implement the
+minimal behaviour required by the tests.
 """
 
 from __future__ import annotations
@@ -26,11 +26,87 @@ class MQAGConfig:
     answering: str = "qa"
 
 
-def _not_impl(*args, **kwargs):  # pragma: no cover - defensive stub
-    raise NotImplementedError("This stub does not implement the full logic")
+# ---------------------------------------------------------------------------
+# Tokenisation helpers mirroring the original project
+# ---------------------------------------------------------------------------
+
+def prepare_qa_input(t5_tokenizer, *, context: str, device: str | int | None = None):
+    """Tokenise ``context`` for question generation.
+
+    Parameters
+    ----------
+    t5_tokenizer:
+        HuggingFace tokenizer used by the QG model.
+    context:
+        Source passage from which questions are generated.
+    device:
+        Device identifier understood by :meth:`torch.Tensor.to`.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of shape ``(1, seq_len)`` containing token ids for the model.
+    """
+
+    encoding = t5_tokenizer([context], return_tensors="pt")
+    input_ids = encoding.input_ids
+    if device is not None:
+        input_ids = input_ids.to(device)
+    return input_ids
 
 
-prepare_qa_input = _not_impl
-prepare_distractor_input = _not_impl
-prepare_answering_input = _not_impl
+def prepare_distractor_input(
+    t5_tokenizer,
+    *,
+    context: str,
+    question: str,
+    answer: str,
+    device: str | int | None = None,
+    separator: str = "<sep>",
+):
+    """Tokenise the question/answer pair for distractor generation.
+
+    Returns a tensor of shape ``(1, seq_len)`` suitable for the second
+    question generation model which predicts distractors.
+    """
+
+    input_text = f"{question} {separator} {answer} {separator} {context}"
+    encoding = t5_tokenizer([input_text], return_tensors="pt")
+    input_ids = encoding.input_ids
+    if device is not None:
+        input_ids = input_ids.to(device)
+    return input_ids
+
+
+def prepare_answering_input(
+    tokenizer,
+    question: str,
+    options: list[str],
+    context: str,
+    *,
+    device: str | int | None = None,
+    max_seq_length: int = 4096,
+):
+    """Tokenise multiple-choice QA inputs for ``LongformerForMultipleChoice``.
+
+    Returns a mapping with ``input_ids`` and ``attention_mask`` tensors of
+    shape ``(1, num_options, seq_len)``.
+    """
+
+    c_plus_q = context + " " + tokenizer.bos_token + " " + question
+    repeated_context = [c_plus_q] * len(options)
+    tokenized = tokenizer(
+        repeated_context,
+        options,
+        max_length=max_seq_length,
+        padding="longest",
+        truncation=True,
+        return_tensors="pt",
+    )
+    if device is not None:
+        tokenized = tokenized.to(device)
+
+    input_ids = tokenized["input_ids"].unsqueeze(0)
+    attention_mask = tokenized["attention_mask"].unsqueeze(0)
+    return {"input_ids": input_ids, "attention_mask": attention_mask}
 
