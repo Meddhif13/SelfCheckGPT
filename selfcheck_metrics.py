@@ -270,7 +270,7 @@ class SelfCheckMQAG:
             g1_model = g1_model or MQAGConfig.generation1_squad
             g2_model = g2_model or MQAGConfig.generation2
             qa_model = qa_model or MQAGConfig.answering
-            answer_model = answer_model or "potsawee/longformer-large-4096-answerable-squad2"
+            answer_model = answer_model or MQAGConfig.answerable
 
             self.g1_tokenizer = AutoTokenizer.from_pretrained(g1_model)
             self.g1_model = AutoModelForSeq2SeqLM.from_pretrained(g1_model)

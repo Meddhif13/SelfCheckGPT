@@ -17,13 +17,19 @@ from dataclasses import dataclass
 class MQAGConfig:
     """Model names used by the MQAG metric.
 
-    The real project stores default HuggingFace model identifiers here.
-    For the purposes of the tests we simply keep placeholder strings.
+    These defaults mirror the identifiers cited in the original
+    SelfCheckGPT paper and point to publicly available HuggingFace
+    checkpoints.  They are used when no explicit model names are provided
+    to :class:`selfcheck_metrics.SelfCheckMQAG`.
     """
 
-    generation1_squad: str = "g1"
-    generation2: str = "g2"
-    answering: str = "qa"
+    # First and second question generation models
+    generation1_squad: str = "potsawee/t5-base-squad-qg"
+    generation2: str = "potsawee/t5-base-distractor-generation"
+    # Multiple-choice answerer
+    answering: str = "potsawee/longformer-large-4096-mc-squad2"
+    # Answerability classifier
+    answerable: str = "potsawee/longformer-large-4096-answerable-squad2"
 
 
 # ---------------------------------------------------------------------------
