@@ -17,7 +17,7 @@ def test_spacy_model_loads():
 def test_wikibio_dataset_loads(tmp_path):
     try:
         ds = load_wikibio_hallucination(
-            split="train[:1]", cache_dir=tmp_path
+            split="evaluation[:1]", cache_dir=tmp_path
         )
     except Exception as exc:  # pragma: no cover - network failure
         pytest.skip(f"dataset download failed: {exc}")
