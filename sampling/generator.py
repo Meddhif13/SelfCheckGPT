@@ -9,7 +9,7 @@ import time
 import hashlib
 import logging
 
-from openai import OpenAI, RateLimitError
+from openai import OpenAI, RateLimitError, APIError
 
 
 class LLM(Protocol):
@@ -75,6 +75,7 @@ class OpenAIChatLLM:
             return self._cache[key]
 
         client = self._ensure_client()
+        last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 res = client.chat.completions.create(
@@ -86,9 +87,10 @@ class OpenAIChatLLM:
                 text = res.choices[0].message.content or ""
                 self._cache[key] = text
                 return text
-            except RateLimitError:
+            except (RateLimitError, APIError) as e:
+                last_exc = e
                 time.sleep(self.retry_wait * (2**attempt))
-        raise RuntimeError("OpenAI API request failed after retries")
+        raise RuntimeError("OpenAI API request failed after retries") from last_exc
 
     def ask_yes_no(self, context: str, sentence: str) -> str:  # pragma: no cover - network
         prompt = (
