@@ -1,12 +1,15 @@
 import json
 import sys
 from pathlib import Path
+import types
 
+import httpx
 import pytest
+from openai import APIError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from sampling.generator import generate_samples
+from sampling.generator import generate_samples, OpenAIChatLLM
 
 
 class StubLLM:
@@ -68,4 +71,56 @@ def test_sampling_cache(tmp_path: Path):
     rec1 = json.loads(out1.read_text().splitlines()[0])
     rec2 = json.loads(out2.read_text().splitlines()[0])
     assert rec1["sample"] == rec2["sample"]
+
+
+class _StubCompletions:
+    def __init__(self, responses):
+        self._responses = responses
+        self.calls = 0
+
+    def create(self, **kwargs):
+        response = self._responses[self.calls]
+        self.calls += 1
+        if isinstance(response, Exception):
+            raise response
+        return types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(content=response)
+                )
+            ]
+        )
+
+
+class _StubClient:
+    def __init__(self, responses):
+        self.chat = types.SimpleNamespace(completions=_StubCompletions(responses))
+
+
+def _make_api_error() -> APIError:
+    request = httpx.Request("POST", "https://example.com")
+    return APIError("boom", request=request, body=None)
+
+
+def test_openai_chatllm_retries_apierror_and_succeeds():
+    err = _make_api_error()
+    client = _StubClient([err, "ok"])
+    llm = OpenAIChatLLM(max_retries=2, retry_wait=0)
+    llm._client = client
+
+    result = llm("hi", temperature=0.1)
+    assert result == "ok"
+    assert client.chat.completions.calls == 2
+
+
+def test_openai_chatllm_raises_runtime_after_retries():
+    err = _make_api_error()
+    client = _StubClient([err, err])
+    llm = OpenAIChatLLM(max_retries=2, retry_wait=0)
+    llm._client = client
+
+    with pytest.raises(RuntimeError) as excinfo:
+        llm("hi", temperature=0.1)
+    assert isinstance(excinfo.value.__cause__, APIError)
+    assert client.chat.completions.calls == 2
 
