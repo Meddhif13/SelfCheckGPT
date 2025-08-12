@@ -12,7 +12,7 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "selfcheckgpt"
 
 
 def load_wikibio_hallucination(
-    split: str = "train",
+    split: str = "evaluation",
     cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
 ) -> Dataset:
     """Download and return a slice of the WikiBio hallucination dataset.
@@ -21,7 +21,7 @@ def load_wikibio_hallucination(
 
     Args:
         split: Dataset split to load. Supports slice notation such as
-            ``"train[:1]"`` for a tiny sample used in tests.
+            ``"evaluation[:1]"`` for a tiny sample used in tests.
         cache_dir: Directory where the dataset will be cached.
 
     Returns:

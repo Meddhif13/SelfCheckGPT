@@ -1,0 +1,57 @@
+﻿# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+*.pkl
+*.log
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDE/OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Secrets / local config ---
+.env
+.env.*
+*.secret
+*.private
+
+# --- Large model/data artifacts ---
+hf-cache/
+results/
+data/
+sampling/
+# weights / checkpoints (anywhere in repo)
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.onnx
+*.h5
+*.tflite
+*.pb
+*.tar
+*.gz
+*.zip
+*.7z
+
+# --- Hugging Face extra cache dirs (if any end up inside repo) ---
+**/hub/
+
