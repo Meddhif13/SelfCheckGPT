@@ -1,4 +1,4 @@
-"""Simplified SelfCheckGPT metrics implementations.
+﻿"""Simplified SelfCheckGPT metrics implementations.
 
 This module provides light-weight approximations of the five
 SelfCheckGPT variants described in the paper.  The goal of this file is
@@ -206,7 +206,7 @@ class SelfCheckMQAG:
         How many questions to sample per sentence (default 3).
     g1_model, g2_model, qa_model, answer_model: str, optional
         HuggingFace model identifiers for the first and second question
-        generator, the multiple‑choice answerer and the answerability
+        generator, the multipleâ€‘choice answerer and the answerability
         classifier.
     device: int | str | None, optional
         Device string or CUDA device id used for all models.
@@ -738,7 +738,7 @@ class SelfCheckNLI:
     """NLI based scorer using a pretrained model.
 
     By default :class:`SelfCheckNLI` loads the
-    ``microsoft/deberta-v3-large-mnli`` model to obtain Natural Language
+    ``microsoft/deberta-large-mnli`` model to obtain Natural Language
     Inference probabilities.  A different model name can be supplied.  For
     each pair of ``(sample, sentence)`` it computes the probability of
     *contradiction* and uses this value directly as the inconsistency score.
@@ -754,7 +754,7 @@ class SelfCheckNLI:
 
     def __init__(
         self,
-        model: str = "microsoft/deberta-v3-large-mnli",
+        model: str = "microsoft/deberta-large-mnli",
         nli_fn: Callable[[str, str], Sequence[float]] | None = None,
         device: str | None = None,
         temperature: float = 1.0,
@@ -1032,4 +1032,5 @@ __all__ = [
     "SelfCheckNLI",
     "SelfCheckPrompt",
 ]
+
 

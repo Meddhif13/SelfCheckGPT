@@ -1,4 +1,4 @@
-"""Minimal stubs for the original :mod:`selfcheckgpt` utilities.
+﻿"""Minimal stubs for the original :mod:`selfcheckgpt` utilities.
 
 This project only relies on a tiny subset of the real library.  The
 functions defined here provide the interfaces expected by
@@ -24,10 +24,10 @@ class MQAGConfig:
     """
 
     # First and second question generation models
-    generation1_squad: str = "potsawee/t5-base-squad-qg"
+    generation1_squad: str = "lmqg/flan-t5-base-squad-qg"
     generation2: str = "potsawee/t5-base-distractor-generation"
     # Multiple-choice answerer
-    answering: str = "potsawee/longformer-large-4096-mc-squad2"
+    answering: str = "potsawee/longformer-large-4096-answering-race"
     # Answerability classifier
     answerable: str = "potsawee/longformer-large-4096-answerable-squad2"
 
@@ -115,4 +115,5 @@ def prepare_answering_input(
     input_ids = tokenized["input_ids"].unsqueeze(0)
     attention_mask = tokenized["attention_mask"].unsqueeze(0)
     return {"input_ids": input_ids, "attention_mask": attention_mask}
+
 
