@@ -57,7 +57,7 @@ model. After installing the Python dependencies, download these resources:
 ```bash
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
-python -c "from data.utils import load_wikibio_hallucination; load_wikibio_hallucination(split='train[:1]')"
+python -c "from data.utils import load_wikibio_hallucination; load_wikibio_hallucination(split='evaluation[:1]')"
 ```
 
 ## GPU setup (RTX 4060)
@@ -98,10 +98,12 @@ python run_experiments.py --metrics ngram mqag nli --limit 25
 
 Use ``--train-split``, ``--val-split`` and ``--test-split`` to select dataset
 partitions for training the combiner, optional validation, and final
-evaluation.  Splits accept the usual Hugging Face slicing syntax:
+evaluation.  The WikiBio hallucination dataset only provides an
+``evaluation`` split, so different slices of it can be used for the
+individual stages:
 
 ```bash
-python run_experiments.py --train-split train[:1000] --val-split validation[:200] --test-split test --metrics all --sample-count 20
+python run_experiments.py --train-split evaluation[:1000] --val-split evaluation[1000:1200] --test-split evaluation[1200:2000] --metrics all --sample-count 20
 ```
 
 The ``--sample-count`` flag controls how many sampled passages per

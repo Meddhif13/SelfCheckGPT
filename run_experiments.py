@@ -196,19 +196,19 @@ def main() -> None:  # pragma: no cover - exercised via CLI
     parser.add_argument(
         "--train-split",
         type=str,
-        default="train",
+        default="evaluation",
         help="Dataset split or slice for training the combiner.",
     )
     parser.add_argument(
         "--val-split",
         type=str,
-        default="validation",
+        default=None,
         help="Optional dataset split or slice for validation/hyperparameters.",
     )
     parser.add_argument(
         "--test-split",
         type=str,
-        default="test",
+        default="evaluation",
         help="Dataset split or slice for final evaluation.",
     )
     parser.add_argument(

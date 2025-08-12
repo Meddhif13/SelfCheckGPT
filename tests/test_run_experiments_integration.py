@@ -38,11 +38,11 @@ def test_run_experiments_tiny(tmp_path, monkeypatch):
             "--output-dir",
             str(out_dir),
             "--train-split",
-            "train[:1]",
+            "evaluation[:1]",
             "--val-split",
-            "validation[:1]",
+            "evaluation[:1]",
             "--test-split",
-            "test[:1]",
+            "evaluation[:1]",
         ],
     )
     run_experiments.main()
@@ -54,7 +54,7 @@ def test_run_experiments_tiny(tmp_path, monkeypatch):
     assert (out_dir / "combiner.pt").exists()
     content = summary.read_text()
     assert "ngram" in content
-    assert seen_splits == ["train[:1]", "validation[:1]", "test[:1]"]
+    assert seen_splits == ["evaluation[:1]", "evaluation[:1]", "evaluation[:1]"]
 
 
 def test_run_experiments_temperature_sweep(tmp_path, monkeypatch):
