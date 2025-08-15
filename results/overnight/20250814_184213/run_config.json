@@ -6,8 +6,8 @@
                    "full":  100,
                    "smoke":  20
                },
-    "resultsRoot":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results",
-    "runDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213",
-    "hfHome":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\hf-cache",
+    "resultsRoot":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\results",
+    "runDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\results\\overnight\\20250814_184213",
+    "hfHome":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\hf-cache",
     "transformersOffline":  "1"
 }

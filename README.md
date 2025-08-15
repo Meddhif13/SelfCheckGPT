@@ -1,8 +1,8 @@
-# SlefCheckGPT
+# SelfCheckGPT
 
 This repository provides a **light‑weight educational reimplementation** of
 several ideas from the paper
-[*SelfCheckGPT: Zero‑Resource Black‑Box Hallucination Detection for Generative LLMs*](https://arxiv.org/abs/2305.11617).
+[*SelfCheckGPT: Zero‑Resource Black‑Box Hallucination Detection for Generative LLMs*](https://arxiv.org/abs/2303.08896).
 
 The goal is to expose simple, easy to read code rather than to perfectly
 reproduce the original results.  The project offers minimal Python
