@@ -5,20 +5,21 @@ several ideas from the paper
 [*SelfCheckGPT: Zero‑Resource Black‑Box Hallucination Detection for Generative LLMs*](https://arxiv.org/abs/2305.11617).
 
 The goal is to expose simple, easy to read code rather than to perfectly
-reproduce the original results.  The project offers minimal Python
-classes for five scoring strategies:
+reproduce the original results.
 
-➡ For a detailed project status, evolution timeline, and change log, see: [docs/status.md](docs/status.md)
+- For the project status, evolution timeline, and change log, see [docs/status.md](docs/status.md).
 
-* **BERTScore** – semantic similarity to sampled passages.
-* **MQAG** – a tiny proxy for question answering consistency.
-* **n‑gram** – unigram language model scoring.
-* **NLI** – entailment check using a pretrained NLI model.
-* **LLM Prompt** – ask an external model whether a sentence is supported.
+The project offers minimal Python classes for five scoring strategies:
 
-## Quick MQAG example
+- **BERTScore** – semantic similarity to sampled passages.
+- **MQAG** – a tiny proxy for question answering consistency.
+- **n‑gram** – unigram language model scoring.
+- **NLI** – entailment check using a pretrained NLI model.
+- **LLM Prompt** – ask an external model whether a sentence is supported.
 
-Run the full MQAG pipeline with real HuggingFace models:
+## Quick MQAG Example
+
+This example runs the MQAG pipeline with Hugging Face models:
 
 ```python
 from selfcheck_metrics import SelfCheckMQAG
@@ -40,7 +41,7 @@ scores, answerability = mqag.predict(sentences, samples)
 print(scores[0], answerability[0])
 ```
 
-The first call downloads the model weights and may take a moment.
+The first run downloads the model weights, so it may take a moment.
 
 The `run_experiments.py` script can evaluate any of the simplified
 metrics on the WikiBio hallucination dataset.  It mirrors the evaluation
