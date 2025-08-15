@@ -8,7 +8,7 @@ The goal is to expose simple, easy to read code rather than to perfectly
 reproduce the original results.  The project offers minimal Python
 classes for five scoring strategies:
 
-➡ For a detailed project status, evolution timeline, and change log, see: [docs/status.md](docs/status.md)
+ For a detailed project status, evolution timeline, and change log, see: [docs/status.md](docs/status.md)
 
 * **BERTScore** – semantic similarity to sampled passages.
 * **MQAG** – a tiny proxy for question answering consistency.
