@@ -1,4 +1,83 @@
-﻿# --- Python ---
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.ipynb_checkpoints/
+
+# Editors/IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# HF cache and other large caches
+# Hugging Face cache (always ignore)
+hf-cache/
+hf-cache/**
+
+# Secrets
+.secrets/
+.env
+*.env
+*.key
+
+# Logs
+*.log
+logs/**
+
+# Results (ignore by default)
+# Results (ignore by default)
+results/**
+
+# Keep selected demo artifacts at repo root
+!results/combined_*.png
+!results/ngram_*.png
+!results/prompt_*.png
+!results/bertscore_*.png
+!results/summary.csv
+!results/combiner.pt
+
+# Keep curated offline GPU smoke-tuned demo from the overnight run
+!results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/**
+# but still ignore any logs in there and large models accidentally dropped in
+results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/*.log
+results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/**/*.bin
+results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/**/*.pt
+
+# Keep only summary.csv for online runs of the same overnight
+!results/overnight/20250814_184213/online/*/summary.csv
+
+# Always ignore all transcripts
+results/overnight/**/*.log
+# local secrets
+.secrets/
+.env
+# results
+results/
+# --- Python ---
 __pycache__/
 *.py[cod]
 *.so
@@ -37,7 +116,6 @@ Thumbs.db
 hf-cache/
 results/
 data/
-sampling/
 # weights / checkpoints (anywhere in repo)
 *.safetensors
 *.bin

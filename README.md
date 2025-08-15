@@ -8,6 +8,8 @@ The goal is to expose simple, easy to read code rather than to perfectly
 reproduce the original results.  The project offers minimal Python
 classes for five scoring strategies:
 
+➡ For a detailed project status, evolution timeline, and change log, see: [docs/status.md](docs/status.md)
+
 * **BERTScore** – semantic similarity to sampled passages.
 * **MQAG** – a tiny proxy for question answering consistency.
 * **n‑gram** – unigram language model scoring.
@@ -139,6 +141,148 @@ default).  It will contain ``summary.csv``, per‑metric ``*_pr.png`` and
 ``*_calibration.png`` plots and, when multiple metrics are combined, the trained
 logistic‑regression weights in ``combiner.pt``.
 
+### Threshold tuning (optional)
+
+You can automatically sweep decision thresholds on a chosen split to maximize
+F1, then apply those thresholds to the single operating point reported in
+``summary.csv`` and saved into ``thresholds.json``:
+
+```bash
+python run_experiments.py --metrics ngram nli bertscore prompt \
+    --limit 200 --output-dir results/gpu_demo --tune-thresholds --tune-split train
+```
+
+Average precision (AP) and PR curves are unaffected by thresholds; only the
+reported precision/recall/F1 at the single operating point use the tuned value.
+
+## Offline and GPU usage
+
+All heavy Hugging Face models can run fully offline once cached. To force
+offline mode, set:
+
+```powershell
+$env:HF_HOME=(Resolve-Path .\hf-cache).Path
+$env:HF_HUB_OFFLINE='1'
+$env:TRANSFORMERS_OFFLINE='1'
+```
+
+For BERTScore, run once online with ``--bertscore-model roberta-large`` to let
+the library fetch baseline rescaling stats. After that, you can switch back to
+offline using the cached files (or pass ``--bertscore-no-baseline`` to disable
+rescaling entirely).
+
+To use GPU, ensure PyTorch detects CUDA and export:
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES='0'
+```
+
+Recommended GPU run (offline) using local cache:
+
+```powershell
+.\.venv\Scripts\Activate
+$env:HF_HOME=(Resolve-Path .\hf-cache).Path
+$env:HF_HUB_OFFLINE='1'
+$env:TRANSFORMERS_OFFLINE='1'
+$env:CUDA_VISIBLE_DEVICES='0'
+
+python run_experiments.py --metrics ngram nli bertscore prompt --limit 200 `
+    --output-dir results\gpu_demo --deterministic `
+    --nli-batch-size 16 --nli-max-length 160 `
+    --bertscore-model hf-cache\roberta-large `
+    --prompt-backend hf `
+    --prompt-hf-model hf-cache\lmqg__flan-t5-base-squad-qg `
+    --prompt-hf-task text2text-generation --prompt-hf-device cuda --prompt-hf-max-new-tokens 24 `
+    --tune-thresholds --tune-split train
+```
+
+## Results (sample)
+
+### GPU Offline Run (results/gpu_demo)
+
+This run used all metrics (ngram, NLI, BERTScore, prompt) on 200 examples, fully offline and GPU-accelerated. All model weights were loaded from the local Hugging Face cache. Plots and summary statistics are in `results/gpu_demo`:
+
+- `summary.csv`: Per-metric and combined scores (average precision, Brier, F1, precision, recall)
+- `*_pr.png`, `*_calibration.png`: Precision-recall and calibration curves for each metric and the combiner
+- `combiner.pt`: Trained logistic regression weights for the combined metric
+
+#### Example metrics (limit=200, offline, GPU)
+
+| Metric     | AP     | Brier  | F1    | Precision | Recall |
+|------------|--------|--------|-------|-----------|--------|
+| ngram      | 0.92   | 0.11   | 0.94  | 0.89      | 1.00   |
+| nli        | 0.95   | 0.54   | 0.37  | 1.00      | 0.23   |
+| bertscore  | 0.85   | 0.88   | 0.00  | 0.00      | 0.00   |
+| prompt     | 0.89   | 0.12   | 0.94  | 0.89      | 1.00   |
+| combined   | 0.95   | 0.10   | 0.94  | 0.89      | 1.00   |
+
+Plots:
+- `results/gpu_demo/combined_pr.png`, `results/gpu_demo/combined_calibration.png`
+- Per-metric: `ngram_pr.png`, `nli_pr.png`, `bertscore_pr.png`, `prompt_pr.png` (and calibration variants)
+
+#### Workflow evolution
+- Added CLI flags for offline mode, local model paths, and GPU device selection
+- Implemented threshold tuning (`--tune-thresholds`) for optimal F1 at a single operating point
+- Documented all steps and results in README for reproducibility
+
+See the Changelog for a full list of recent improvements.
+
+### Smoke‑tuned Run (results/gpu_demo_smoke_tuned)
+
+This smaller run demonstrates threshold tuning and verbose logging end‑to‑end.
+
+- Command (PowerShell):
+    ```powershell
+    .\.venv\Scripts\Activate
+    $env:HF_HOME=(Resolve-Path .\hf-cache).Path
+    $env:HF_HUB_OFFLINE='1'
+    $env:TRANSFORMERS_OFFLINE='1'
+    $env:CUDA_VISIBLE_DEVICES='0'
+
+    python run_experiments.py --metrics ngram nli bertscore prompt --limit 20 `
+        --output-dir results\gpu_demo_smoke_tuned --deterministic `
+        --nli-batch-size 16 --nli-max-length 160 `
+        --bertscore-model hf-cache\roberta-large `
+        --prompt-backend hf `
+        --prompt-hf-model hf-cache\lmqg__flan-t5-base-squad-qg `
+        --prompt-hf-task text2text-generation --prompt-hf-device cuda --prompt-hf-max-new-tokens 24 `
+        --tune-thresholds --tune-split train `
+        --verbose
+    ```
+
+- Artifacts: `summary.csv` (includes per‑metric threshold column), `thresholds.json`, per‑metric and combined PR/calibration plots, `combiner.pt`.
+
+- Tuned thresholds (thresholds.json):
+    - ngram: 0.99149
+    - nli: 0.00326
+    - bertscore: 0.00313
+    - prompt: 0.97500
+
+- Key results (limit=20):
+    - combined: AP 0.8710, Brier 0.1893, F1 0.8592, Precision 0.7578, Recall 0.9919, Threshold 0.7084
+    - ngram: AP 0.8137, Brier 0.2650, F1 0.8551, P 0.7563, R 0.9837, Thr 0.9915
+    - nli: AP 0.8680, Brier 0.4667, F1 0.8521, P 0.7516, R 0.9837, Thr 0.00326
+    - bertscore: AP 0.7334, Brier 0.7240, F1 0.8502, P 0.7439, R 0.9919, Thr 0.00313
+    - prompt: AP 0.7542, Brier 0.2626, F1 0.8511, P 0.7547, R 0.9756, Thr 0.9750
+
+Reproducing: rerun the command above; for larger runs, increase `--limit` and reuse `--tune-thresholds` and `--verbose`.
+
+A small offline GPU run (limit=5) produced per‑metric PR/calibration plots and
+``summary.csv`` in ``results/gpu_demo``. After a one‑time online BERTScore run
+to cache baselines, BERTScore reported non‑zero P/R at the single operating
+point, and the combined model achieved strong AP and calibration on the sample.
+For robust conclusions, increase ``--limit`` (e.g., 200–1000) and inspect
+``combined_pr.png`` and ``combined_calibration.png``.
+
+## Changelog
+
+- Added Hugging Face prompt backend (local pipelines) and device control.
+- Added offline support and local model path flags (BERTScore, MQAG, NLI).
+- Added GPU optimizations and batching flags for heavy models.
+- Added BERTScore baseline rescaling handling and guidance for offline usage.
+- Added threshold tuning (``--tune-thresholds``/``--tune-split``) with persisted
+    ``thresholds.json`` and reporting of the applied threshold in ``summary.csv``.
+
 ## LLM configuration
 
 Some features such as sample generation (`--resample`) and the `prompt` metric
@@ -169,3 +313,61 @@ pytest -q
 The code is intentionally compact and designed for instructional
 purposes.  It should serve as a starting point for more complete
 replications of the original SelfCheckGPT system.
+
+## Testing status
+
+- Environment: Python 3.11/3.13 (Windows), PyTorch with CUDA when available
+- Current result: full test suite passes (25 passed, 0 failed)
+- Scope covered by tests:
+    - MQAG pipeline (stubbed models) with disagreement and answerability stats
+    - NLI scorer (HF model path and pure-stub path), including temperature calibration
+    - BERTScore scorer integration (skipped if model unavailable)
+    - n‑gram scorer for multiple n and smoothing setups
+    - Prompt scorer (OpenAI/huggingface backends, caching, normalization)
+
+For reproducible local runs on Windows PowerShell:
+
+```powershell
+& .\.venv\Scripts\Activate
+pytest -q
+```
+
+## Docs
+
+- Project status, evolution, and change log: [docs/status.md](docs/status.md)
+- Quick MQAG example and usage: see the top of this README
+- Experiments and GPU/offline guidance: "Running experiments", "Offline and GPU usage"
+
+## Overnight runs (online + offline)
+
+Use the orchestrator to run online (OpenAI) and offline (HF) experiments and save a transcript plus a manifest to a timestamped directory.
+
+- Offline only:
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\overnight.ps1 -SkipOpenAI
+```
+
+- Online + offline:
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\overnight.ps1 -OpenAIModel gpt-4o-mini
+```
+
+Outputs are saved under `results/overnight/<timestamp>/` with:
+- `transcript_<timestamp>.log`: full PowerShell transcript
+- `manifest.json`, `run_config.json`: step outcomes and configuration
+- `env/`: captured Python and GPU info
+- `online/` and `offline/` subfolders containing per-run artifacts
+
+Example offline GPU smoke (limit=20) results from `offline/gpu_demo_smoke_tuned/summary.csv`:
+- ngram: AP 0.8137, Brier 0.2650, F1 0.8551
+- nli: AP 0.8680, Brier 0.4667, F1 0.8521
+- bertscore: AP 0.7334, Brier 0.7240, F1 0.8502 (baseline disabled offline)
+- prompt: AP 0.7542, Brier 0.2626, F1 0.8511
+- combined: AP 0.8710, Brier 0.1893, F1 0.8592
+
+Example online runs (timestamped under `online/`):
+- prompt_smoke_gpt-4o-mini (limit=20): prompt AP 0.9340; combined AP 0.9340
+- resample_smoke_gpt-4o-mini (limit=20): ngram AP 0.7498; combined AP 0.7498
+- combined_100_gpt-4o-mini (limit=100): combined AP 0.6940; ngram AP 0.6717; prompt AP 0.7578

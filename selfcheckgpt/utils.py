@@ -1,87 +1,96 @@
-﻿"""Minimal stubs for the original :mod:`selfcheckgpt` utilities.
-
-This project only relies on a tiny subset of the real library.  The
-functions defined here provide the interfaces expected by
-``selfcheck_metrics`` so that the tests can run without the heavy
-dependencies of the original project.  Only a handful of convenience
-wrappers around HuggingFace tokenizers are included; they implement the
-minimal behaviour required by the tests.
-"""
+﻿"""Utility functions for SelfCheckGPT metrics."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Union
 
+import torch
+import numpy as np
 
-@dataclass
-class MQAGConfig:
-    """Model names used by the MQAG metric.
+# Resolve repo root and hf-cache folder
+_ROOT = Path(__file__).resolve().parents[1]
+_HF   = _ROOT / "hf-cache"
+_HUB  = _HF / "hub"
 
-    These defaults mirror the identifiers cited in the original
-    SelfCheckGPT paper and point to publicly available HuggingFace
-    checkpoints.  They are used when no explicit model names are provided
-    to :class:`selfcheck_metrics.SelfCheckMQAG`.
-    """
+# Set HuggingFace cache directory and offline mode
+os.environ["TRANSFORMERS_CACHE"] = str(_HF)
+os.environ["HF_HOME"] = str(_HF)
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+def _abs(p: Path) -> str:
+    """Convert path to absolute with forward slashes"""
+    return str(p.resolve()).replace("\\", "/")
 
     # First and second question generation models
-    generation1_squad: str = "lmqg/flan-t5-base-squad-qg"
-    generation2: str = "potsawee/t5-base-distractor-generation"
-    # Multiple-choice answerer
-    answering: str = "potsawee/longformer-large-4096-answering-race"
-    # Answerability classifier
-    answerable: str = "potsawee/longformer-large-4096-answerable-squad2"
+    generation1_squad: str = _QG_DEFAULT
+    generation2: str       = _DIS_DEFAULT
 
+    # Multiple-choice answerer
+    answering:  str = _abs(_HF / "potsawee__longformer-large-4096-answering-race")
+    # Answerability classifier
+    answerable: str = _abs(_HF / "potsawee__longformer-large-4096-answerable-squad2")
+
+    def __post_init__(self):
+        # If caller passed None/empty, repair to defaults
+        if not self.generation1_squad:
+            self.generation1_squad = _QG_DEFAULT
+        if not self.generation2:
+            self.generation2 = _DIS_DEFAULT
 
 # ---------------------------------------------------------------------------
 # Tokenisation helpers mirroring the original project
 # ---------------------------------------------------------------------------
 
-def prepare_qa_input(t5_tokenizer, *, context: str, device: str | int | None = None):
-    """Tokenise ``context`` for question generation.
+@dataclass
+class MQAGConfig:
+    """Model names used by the MQAG metric."""
+    # Question generation models
+    generation1_squad: str = _abs(_HF / "lmqg__flan-t5-base-squad-qg")
+    generation1_race: str = _abs(_HF / "lmqg__flan-t5-base-race")
+    generation2: str = _abs(_HF / "potsawee__t5-large-generation-race-Distractor")
+    # QA models
+    answering: str = _abs(_HF / "potsawee__longformer-large-4096-answering-race")
+    answerability: str = _abs(_HF / "potsawee__longformer-large-4096-answerable-squad2")
 
-    Parameters
-    ----------
-    t5_tokenizer:
-        HuggingFace tokenizer used by the QG model.
-    context:
-        Source passage from which questions are generated.
-    device:
-        Device identifier understood by :meth:`torch.Tensor.to`.
+@dataclass
+class NLIConfig:
+    """Model name for NLI."""
+    nli_model: str = _abs(_HF / "microsoft__deberta-large-mnli")
 
-    Returns
-    -------
-    torch.Tensor
-        Tensor of shape ``(1, seq_len)`` containing token ids for the model.
-    """
-
+def prepare_qa_input(t5_tokenizer, context: str, device: Optional[Union[str, torch.device]] = None) -> torch.Tensor:
+    """Prepare input for question generation."""
     encoding = t5_tokenizer([context], return_tensors="pt")
     input_ids = encoding.input_ids
     if device is not None:
         input_ids = input_ids.to(device)
     return input_ids
 
+# Import MQAG-specific utilities
+from .mqag_utils import prepare_distractor_input, prepare_answering_input
 
-def prepare_distractor_input(
-    t5_tokenizer,
-    *,
-    context: str,
-    question: str,
-    answer: str,
-    device: str | int | None = None,
-    separator: str = "<sep>",
-):
-    """Tokenise the question/answer pair for distractor generation.
+# Utility functions
+def expand_list1(mylist: List[Any], num: int) -> List[Any]:
+    """Expand a list by repeating each element num times."""
+    expanded = []
+    for x in mylist:
+        for _ in range(num):
+            expanded.append(x)
+    return expanded
 
-    Returns a tensor of shape ``(1, seq_len)`` suitable for the second
-    question generation model which predicts distractors.
-    """
+def expand_list2(mylist: List[Any], num: int) -> List[Any]:
+    """Expand a list by repeating the whole list num times."""
+    expanded = []
+    for _ in range(num):
+        expanded.extend(mylist)
+    return expanded
 
-    input_text = f"{question} {separator} {answer} {separator} {context}"
-    encoding = t5_tokenizer([input_text], return_tensors="pt")
-    input_ids = encoding.input_ids
-    if device is not None:
-        input_ids = input_ids.to(device)
-    return input_ids
+
+# MQAG utility functions have been moved to mqag_utils.py
+from .mqag_utils import prepare_distractor_input, prepare_answering_input
 
 
 def prepare_answering_input(
@@ -115,5 +124,9 @@ def prepare_answering_input(
     input_ids = tokenized["input_ids"].unsqueeze(0)
     attention_mask = tokenized["attention_mask"].unsqueeze(0)
     return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+
+
+
 
 
