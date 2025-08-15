@@ -1,4 +1,4 @@
-# SlefCheckGPT
+# SelfCheckGPT
 
 This repository provides a **light‑weight educational reimplementation** of
 several ideas from the paper
