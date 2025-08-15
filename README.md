@@ -317,7 +317,7 @@ replications of the original SelfCheckGPT system.
 ## Testing status
 
 - Environment: Python 3.11/3.13 (Windows), PyTorch with CUDA when available
-- Current result: full test suite passes (25 passed, 0 failed)
+- Current result: full test suite passes (35 passed, 0 failed)
 - Scope covered by tests:
     - MQAG pipeline (stubbed models) with disagreement and answerability stats
     - NLI scorer (HF model path and pure-stub path), including temperature calibration
