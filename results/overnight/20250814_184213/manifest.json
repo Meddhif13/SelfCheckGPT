@@ -18,28 +18,28 @@
     {
         "name":  "openai_prompt_smoke",
         "ok":  true,
-        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\online\\prompt_smoke_gpt-4o-mini",
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\results\\overnight\\20250814_184213\\online\\prompt_smoke_gpt-4o-mini",
         "limit":  20,
         "model":  "gpt-4o-mini"
     },
     {
         "name":  "openai_resample_smoke",
         "ok":  true,
-        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\online\\resample_smoke_gpt-4o-mini",
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\results\\overnight\\20250814_184213\\online\\resample_smoke_gpt-4o-mini",
         "limit":  20,
         "model":  "gpt-4o-mini"
     },
     {
         "name":  "openai_combined",
         "ok":  true,
-        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\online\\combined_100_gpt-4o-mini",
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\results\\overnight\\20250814_184213\\online\\combined_100_gpt-4o-mini",
         "limit":  100,
         "model":  "gpt-4o-mini"
     },
     {
         "name":  "offline_gpu_demo_smoke_tuned",
         "ok":  true,
-        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\offline\\gpu_demo_smoke_tuned",
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SelfCheckGPT\\results\\overnight\\20250814_184213\\offline\\gpu_demo_smoke_tuned",
         "limit":  20
     }
 ]
