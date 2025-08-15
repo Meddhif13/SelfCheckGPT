@@ -198,6 +198,19 @@ python run_experiments.py --metrics ngram nli bertscore prompt --limit 200 `
 
 ## Results (sample)
 
+### Final checked-in demo (results/)
+
+These artifacts are included in the repo for a minimal, reproducible demo:
+
+- Files: `results/summary.csv`, `ngram_pr.png`, `ngram_calibration.png`,
+    `combined_pr.png`, `combined_calibration.png`, and `combiner.pt`.
+- Metrics from `results/summary.csv` (rounded):
+    - ngram — AP 0.8295, Brier 0.2671, F1 0.8436, Precision 0.7296, Recall 1.00
+    - combined — AP 0.8294, Brier 0.1973, F1 0.8436, Precision 0.7296, Recall 1.00
+
+Use these as a quick reference and to validate plotting/calibration. For larger
+or GPU/offline runs, see the examples below.
+
 ### GPU Offline Run (results/gpu_demo)
 
 This run used all metrics (ngram, NLI, BERTScore, prompt) on 200 examples, fully offline and GPU-accelerated. All model weights were loaded from the local Hugging Face cache. Plots and summary statistics are in `results/gpu_demo`:
@@ -210,11 +223,11 @@ This run used all metrics (ngram, NLI, BERTScore, prompt) on 200 examples, fully
 
 | Metric     | AP     | Brier  | F1    | Precision | Recall |
 |------------|--------|--------|-------|-----------|--------|
-| ngram      | 0.92   | 0.11   | 0.94  | 0.89      | 1.00   |
-| nli        | 0.95   | 0.54   | 0.37  | 1.00      | 0.23   |
-| bertscore  | 0.85   | 0.88   | 0.00  | 0.00      | 0.00   |
-| prompt     | 0.89   | 0.12   | 0.94  | 0.89      | 1.00   |
-| combined   | 0.95   | 0.10   | 0.94  | 0.89      | 1.00   |
+| ngram      | varies | varies | varies| varies    | varies |
+| nli        | varies | varies | varies| varies    | varies |
+| bertscore  | varies | varies | varies| varies    | varies |
+| prompt     | varies | varies | varies| varies    | varies |
+| combined   | varies | varies | varies| varies    | varies |
 
 Plots:
 - `results/gpu_demo/combined_pr.png`, `results/gpu_demo/combined_calibration.png`
@@ -252,18 +265,9 @@ This smaller run demonstrates threshold tuning and verbose logging end‑to‑en
 
 - Artifacts: `summary.csv` (includes per‑metric threshold column), `thresholds.json`, per‑metric and combined PR/calibration plots, `combiner.pt`.
 
-- Tuned thresholds (thresholds.json):
-    - ngram: 0.99149
-    - nli: 0.00326
-    - bertscore: 0.00313
-    - prompt: 0.97500
-
-- Key results (limit=20):
-    - combined: AP 0.8710, Brier 0.1893, F1 0.8592, Precision 0.7578, Recall 0.9919, Threshold 0.7084
-    - ngram: AP 0.8137, Brier 0.2650, F1 0.8551, P 0.7563, R 0.9837, Thr 0.9915
-    - nli: AP 0.8680, Brier 0.4667, F1 0.8521, P 0.7516, R 0.9837, Thr 0.00326
-    - bertscore: AP 0.7334, Brier 0.7240, F1 0.8502, P 0.7439, R 0.9919, Thr 0.00313
-    - prompt: AP 0.7542, Brier 0.2626, F1 0.8511, P 0.7547, R 0.9756, Thr 0.9750
+- Tuned thresholds will be saved to `thresholds.json` and reflected in
+    `summary.csv` under the `threshold` column. Exact values vary with the
+    sample and tuning split.
 
 Reproducing: rerun the command above; for larger runs, increase `--limit` and reuse `--tune-thresholds` and `--verbose`.
 
@@ -317,7 +321,7 @@ replications of the original SelfCheckGPT system.
 ## Testing status
 
 - Environment: Python 3.11/3.13 (Windows), PyTorch with CUDA when available
-- Current result: full test suite passes (35 passed, 0 failed)
+- Current result: full test suite passes (35 passed, 4 skipped, 0 failed)
 - Scope covered by tests:
     - MQAG pipeline (stubbed models) with disagreement and answerability stats
     - NLI scorer (HF model path and pure-stub path), including temperature calibration
