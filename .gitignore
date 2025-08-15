@@ -44,39 +44,26 @@ hf-cache/**
 *.env
 *.key
 
-# Logs
+# Logs (general app logs ignored by default)
 *.log
 logs/**
 
-# Results (ignore by default)
-# Results (ignore by default)
-results/**
+## Results policy
+# Do NOT blanket-ignore results. We want CSV/PNG/JSON/LOG/TXT artifacts checked in
+# (especially for overnight runs). Checkpoints stay ignored via patterns below.
 
-# Keep selected demo artifacts at repo root
-!results/combined_*.png
-!results/ngram_*.png
-!results/prompt_*.png
-!results/bertscore_*.png
-!results/summary.csv
-!results/combiner.pt
-
-# Keep curated offline GPU smoke-tuned demo from the overnight run
-!results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/**
-# but still ignore any logs in there and large models accidentally dropped in
-results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/*.log
-results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/**/*.bin
-results/overnight/20250814_184213/offline/gpu_demo_smoke_tuned/**/*.pt
-
-# Keep only summary.csv for online runs of the same overnight
-!results/overnight/20250814_184213/online/*/summary.csv
-
-# Always ignore all transcripts
-results/overnight/**/*.log
+# Ensure logs under results are included (overrides the global *.log ignore above)
+!results/**/*.log
+!results/**/*.csv
+!results/**/*.png
+!results/**/*.json
+!results/**/*.jsonl
+!results/**/*.txt
+!results/**/*.md
 # local secrets
 .secrets/
 .env
-# results
-results/
+# results (no blanket ignore; see Results policy above)
 # --- Python ---
 __pycache__/
 *.py[cod]
@@ -114,7 +101,7 @@ Thumbs.db
 
 # --- Large model/data artifacts ---
 hf-cache/
-results/
+# data/ can hold local datasets; keep ignored here to avoid accidentally checking in corpora
 data/
 # weights / checkpoints (anywhere in repo)
 *.safetensors

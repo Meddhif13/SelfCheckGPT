@@ -1,0 +1,45 @@
+﻿[
+    {
+        "name":  "openai_ping",
+        "ok":  [
+                   "[check_openai] Python: 3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+                   "[check_openai] openai SDK: 1.99.9",
+                   "[check_openai] No proxy env detected.",
+                   "[check_openai] models.list() OK. Showing up to 5: [\u0027gpt-4-0613\u0027, \u0027gpt-4\u0027, \u0027gpt-3.5-turbo\u0027, \u0027gpt-5-nano\u0027, \u0027gpt-5\u0027]",
+                   "[check_openai] Trying small chat on model=\u0027gpt-4o-mini\u0027...",
+                   "[check_openai] chat OK. Response: \"Pong!\"",
+                   "[check_openai] SUCCESS",
+                   true
+               ],
+        "start":  "\/Date(1755189741638)\/",
+        "end":  "\/Date(1755189747411)\/",
+        "model":  "gpt-4o-mini"
+    },
+    {
+        "name":  "openai_prompt_smoke",
+        "ok":  true,
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\online\\prompt_smoke_gpt-4o-mini",
+        "limit":  20,
+        "model":  "gpt-4o-mini"
+    },
+    {
+        "name":  "openai_resample_smoke",
+        "ok":  true,
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\online\\resample_smoke_gpt-4o-mini",
+        "limit":  20,
+        "model":  "gpt-4o-mini"
+    },
+    {
+        "name":  "openai_combined",
+        "ok":  true,
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\online\\combined_100_gpt-4o-mini",
+        "limit":  100,
+        "model":  "gpt-4o-mini"
+    },
+    {
+        "name":  "offline_gpu_demo_smoke_tuned",
+        "ok":  true,
+        "outDir":  "C:\\Users\\meddh\\Documents\\GitHub\\SlefCheckGPT\\results\\overnight\\20250814_184213\\offline\\gpu_demo_smoke_tuned",
+        "limit":  20
+    }
+]

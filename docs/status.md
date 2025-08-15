@@ -4,7 +4,7 @@ This document summarizes the repository’s current state, evolution, issues enc
 
 ## Summary
 - Goal: lightweight, educational reimplementation of SelfCheckGPT metrics with clean APIs and offline/GPU-friendly execution.
-- Current status: full test suite green (25/25). Heavy models support offline mode using the local `hf-cache` directory. GPU execution recommended for NLI and MQAG.
+- Current status: full test suite green (35 passed, 4 skipped). Heavy models support offline mode using the local `hf-cache` directory. GPU execution recommended for NLI and MQAG.
 
 ## Evolution timeline (high level)
 1) Context and setup
@@ -82,8 +82,7 @@ This document summarizes the repository’s current state, evolution, issues enc
 - Combiner: simple logistic regression; results may differ from paper.
 
 ## Testing status
-- Passed: 25/25 tests covering MQAG (stubbed), NLI (HF and stub paths), BERTScore integration (skips if unavailable), n-gram scoring, and prompt metric behaviors.
-- Notes: tests validate calibration routines and threshold application; full paper-scale replication is out of scope.
+- Passed: 35 tests, 4 skipped (0 failed). Coverage includes MQAG (stubbed), NLI (HF and stub paths), BERTScore integration (skips if unavailable), n-gram scoring, and prompt metric behaviors. Tests validate calibration routines and threshold application; full paper-scale replication is out of scope.
 
 ## Reproduction and environment
 - Offline mode: use local `hf-cache` and set `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`.
@@ -113,16 +112,16 @@ pytest -q
 We added `scripts/overnight.ps1` to run online (OpenAI) and offline (HF) sweeps with a transcript, manifest, and environment snapshot. Example timestamped output directory: `results/overnight/20250814_184213/`.
 
 Offline GPU smoke (limit=20) in `offline/gpu_demo_smoke_tuned/summary.csv`:
-- ngram: AP 0.8137, Brier 0.2650, F1 0.8551
-- nli: AP 0.8680, Brier 0.4667, F1 0.8521
-- bertscore: AP 0.7334, Brier 0.7240, F1 0.8502 (baseline disabled offline)
-- prompt: AP 0.7542, Brier 0.2626, F1 0.8511
-- combined: AP 0.8710, Brier 0.1893, F1 0.8592
+- ngram: AP 0.8137, Brier 0.2650, F1 0.8551, P 0.7563, R 0.9837, Thr 0.9915
+- nli: AP 0.8680, Brier 0.4667, F1 0.8521, P 0.7516, R 0.9837, Thr 0.00326
+- bertscore: AP 0.7334, Brier 0.7240, F1 0.8502, P 0.7439, R 0.9919, Thr 0.00313
+- prompt: AP 0.7542, Brier 0.2626, F1 0.8511, P 0.7547, R 0.9756, Thr 0.9750
+- combined: AP 0.8710, Brier 0.1893, F1 0.8592, P 0.7578, R 0.9919, Thr 0.7084
 
 Online runs (gpt-4o-mini):
-- `online/prompt_smoke_gpt-4o-mini` (limit=20): prompt AP 0.9340; combined AP 0.9340
-- `online/resample_smoke_gpt-4o-mini` (limit=20): ngram AP 0.7498; combined AP 0.7498
-- `online/combined_100_gpt-4o-mini` (limit=100): combined AP 0.6940; ngram AP 0.6717; prompt AP 0.7578
+- `online/prompt_smoke_gpt-4o-mini` (limit=20): prompt AP 0.9340 (Brier 0.1203, F1 0.9120), combined AP 0.9340 (Brier 0.1682, F1 0.8454)
+- `online/resample_smoke_gpt-4o-mini` (limit=20): ngram AP 0.7498 (Brier 0.2640, F1 0.8454), combined AP 0.7498 (Brier 0.1961, F1 0.8454)
+- `online/combined_100_gpt-4o-mini` (limit=100): combined AP 0.6940 (Brier 0.1873, F1 0.8577); ngram AP 0.6717 (Brier 0.2466, F1 0.8577); prompt AP 0.7578 (Brier 0.6375, F1 0.3294)
 
 Notes:
 - At the end of the run, README generation attempted to compute relative paths for all manifest entries. The `openai_ping` entry doesn’t have an `outDir`, which caused a non-fatal Resolve-Path null argument error during README creation. We hardened the script to skip entries without `outDir` and the next runs won’t show this error. All experiments completed successfully and artifacts were saved.
