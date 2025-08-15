@@ -8,6 +8,7 @@ The goal is to expose simple, easy to read code rather than to perfectly
 reproduce the original results.  The project offers minimal Python
 classes for five scoring strategies:
 
+* For the academic analysis report and overnight results, see: [docs/analysis.md](docs/analysis.md)
  For a detailed project status, evolution timeline, and change log, see: [docs/status.md](docs/status.md)
 
 * **BERTScore** – semantic similarity to sampled passages.
