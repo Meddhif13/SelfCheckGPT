@@ -18,7 +18,8 @@ classes for five scoring strategies:
 
 ## Quick MQAG example
 
-Run the full MQAG pipeline with real HuggingFace models:
+Run the full MQAG pipeline with real HuggingFace models (matching the cached
+models under `hf-cache/` in this repo):
 
 ```python
 from selfcheck_metrics import SelfCheckMQAG
@@ -30,10 +31,16 @@ samples = [
 ]
 
 mqag = SelfCheckMQAG(
-    g1_model="potsawee/t5-base-squad-qg",
-    g2_model="potsawee/t5-base-distractor-generation",
-    qa_model="potsawee/longformer-large-4096-mc-squad2",
-    answer_model="potsawee/longformer-large-4096-answerable-squad2",
+    # Local cache paths (preferred for offline):
+    g1_model="hf-cache/lmqg__flan-t5-base-squad-qg",
+    g2_model="hf-cache/potsawee__t5-large-generation-race-Distractor",
+    qa_model="hf-cache/potsawee__longformer-large-4096-answering-race",
+    answer_model="hf-cache/potsawee__longformer-large-4096-answerable-squad2",
+    # Alternatively, the equivalent HF IDs:
+    # g1_model="lmqg/flan-t5-base-squad-qg",
+    # g2_model="potsawee/t5-large-generation-race-Distractor",
+    # qa_model="potsawee/longformer-large-4096-answering-race",
+    # answer_model="potsawee/longformer-large-4096-answerable-squad2",
 )
 
 scores, answerability = mqag.predict(sentences, samples)
@@ -78,10 +85,10 @@ The script fetches the following models in advance so that the first run does
 not need to contact Hugging Face:
 
 - `roberta-large` for BERTScore
-- `potsawee/t5-base-squad-qg`, `potsawee/t5-base-distractor-generation`,
-  `potsawee/longformer-large-4096-mc-squad2` and
+- `lmqg/flan-t5-base-squad-qg`, `potsawee/t5-large-generation-race-Distractor`,
+  `potsawee/longformer-large-4096-answering-race` and
   `potsawee/longformer-large-4096-answerable-squad2` for MQAG
-- `microsoft/deberta-v3-large-mnli` for NLI
+- `microsoft/deberta-large-mnli` for NLI
 
 ## Running experiments
 
@@ -290,23 +297,32 @@ For robust conclusions, increase ``--limit`` (e.g., 200–1000) and inspect
 ## LLM configuration
 
 Some features such as sample generation (`--resample`) and the `prompt` metric
-require access to an external language model.  The code uses OpenAI's Chat
-Completions API and expects the API key to be available via the
-`OPENAI_API_KEY` environment variable.  The model can be selected with
-`--llm-model`:
+can use an external OpenAI model or a local HuggingFace model.
+
+- OpenAI backend: Set `OPENAI_API_KEY` and pass `--llm-model`. We validated
+    online runs with `gpt-4o-mini`; the code default is a placeholder, so pass
+    your model explicitly.
+- Local HF backend: Use `--prompt-backend hf` and provide a local or hub model
+    (e.g., FLAN‑T5). This requires no API key and works offline once cached.
 
 ```bash
 export OPENAI_API_KEY=sk-YOUR_KEY
-python run_experiments.py --metrics prompt --llm-model gpt-3.5-turbo --top-p 0.9 --top-k 50
+python run_experiments.py --metrics prompt --llm-model gpt-4o-mini --top-p 0.9 --top-k 50
 ```
 
-The same model is reused for both sample generation and Yes/No judgements.
-Generation can be tailored with ``--temperature``, ``--top-k`` and
+The same model is reused for both sample generation and Yes/No judgements (for
+the OpenAI backend). Generation can be tailored with ``--temperature``, ``--top-k`` and
 ``--top-p``.  Passing ``--deterministic`` forces greedy decoding.  The
 ``--temperatures`` flag accepts multiple values to run a sweep which
 stores results for each configuration in a separate directory.  When
 ``--cache-dir`` is supplied GPU or API based generations are cached on
 disk for reproducibility.
+
+Note on prompt HF backend defaults: if you select `--prompt-backend hf` without
+providing `--prompt-hf-model`, the script uses `sshleifer/tiny-gpt2` for a quick
+smoke test. For realistic prompt scoring, pass a stronger model such as
+`lmqg/flan-t5-base-squad-qg` (or the equivalent local cache path under
+`hf-cache/`).
 
 ## Running tests
 
